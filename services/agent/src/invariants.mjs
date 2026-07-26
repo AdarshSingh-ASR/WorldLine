@@ -94,7 +94,9 @@ export function allocateClaims(requests) {
 
 export function validateHlc(value) {
   if (!/^\d{16,22}(?:\.\d{1,10})?(?:,\d+)?$/.test(String(value))) {
-    throw new Error("Invalid CockroachDB HLC timestamp");
+    const error = new Error("Invalid CockroachDB HLC timestamp");
+    error.statusCode = 400;
+    throw error;
   }
   return String(value);
 }

@@ -8,6 +8,7 @@ type Phase =
   | "recalling"
   | "race"
   | "rerouting"
+  | "rejected"
   | "committed"
   | "failure"
   | "receipt";
@@ -26,9 +27,15 @@ type RaceResult = {
   rejected?: boolean;
 };
 
-const API_BASE = process.env.NEXT_PUBLIC_WORLDLINE_API_URL?.replace(/\/$/, "") ?? "";
+const DEFAULT_API_BASE = "https://m1gira53f9.execute-api.us-east-1.amazonaws.com";
+const DEFAULT_WEBSOCKET_URL =
+  "wss://nnzbzczagl.execute-api.us-east-1.amazonaws.com/live";
+const API_BASE =
+  process.env.NEXT_PUBLIC_WORLDLINE_API_URL?.replace(/\/$/, "") ??
+  DEFAULT_API_BASE;
 const WEBSOCKET_URL =
-  process.env.NEXT_PUBLIC_WORLDLINE_WEBSOCKET_URL?.replace(/\/$/, "") ?? "";
+  process.env.NEXT_PUBLIC_WORLDLINE_WEBSOCKET_URL?.replace(/\/$/, "") ??
+  DEFAULT_WEBSOCKET_URL;
 
 const fallbackResult: RaceResult = {
   runId: "WL-2047",
@@ -57,6 +64,7 @@ const phaseOrder: Phase[] = [
   "recalling",
   "race",
   "rerouting",
+  "rejected",
   "committed",
   "failure",
   "receipt",
@@ -74,10 +82,12 @@ function WorldlineCanvas({
   phase,
   reducedMotion,
   authoritative,
+  memoryEnabled,
 }: {
   phase: Phase;
   reducedMotion: boolean;
   authoritative: boolean;
+  memoryEnabled: boolean;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -289,16 +299,18 @@ function WorldlineCanvas({
 
       if (phaseAtLeast(phase, "rerouting")) {
         polyline(unsafeB, width, height, "rgba(255, 95, 100, .7)", 1.5, [3, 8], 5);
-        polyline(
-          safeB,
-          width,
-          height,
-          phaseAtLeast(phase, "committed") && authoritative ? "#caff58" : "#f4bd4f",
-          phaseAtLeast(phase, "committed") && authoritative ? 3 : 2,
-          phaseAtLeast(phase, "committed") && authoritative ? [] : [6, 5],
-          18,
-          Math.min(1, 0.25 + Math.max(0, elapsed) * 0.55),
-        );
+        if (memoryEnabled) {
+          polyline(
+            safeB,
+            width,
+            height,
+            phaseAtLeast(phase, "committed") && authoritative ? "#caff58" : "#f4bd4f",
+            phaseAtLeast(phase, "committed") && authoritative ? 3 : 2,
+            phaseAtLeast(phase, "committed") && authoritative ? [] : [6, 5],
+            18,
+            Math.min(1, 0.25 + Math.max(0, elapsed) * 0.55),
+          );
+        }
       }
 
       if (phaseAtLeast(phase, "committed") && authoritative) {
@@ -327,7 +339,7 @@ function WorldlineCanvas({
       window.removeEventListener("resize", resize);
       window.cancelAnimationFrame(animationFrame);
     };
-  }, [authoritative, phase, reducedMotion]);
+  }, [authoritative, memoryEnabled, phase, reducedMotion]);
 
   return (
     <canvas
@@ -355,6 +367,7 @@ export default function Home() {
     API_BASE ? "connecting" : "demo",
   );
   const [regionCount, setRegionCount] = useState(3);
+  const observedReceiptIds = useRef(new Set<string>());
 
   useEffect(() => {
     const query = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -389,6 +402,7 @@ export default function Home() {
       try {
         const event = JSON.parse(message.data);
         if (event.sourceTable === "commit_receipts") {
+          observedReceiptIds.current.add(event.sourceKey);
           setResult((current) =>
             current.receiptId === event.sourceKey
               ? { ...current, cdcConfirmed: true }
@@ -450,7 +464,13 @@ export default function Home() {
     setPhase("rerouting");
     setResult(
       liveResult
-        ? { ...liveResult, mode: "live" }
+        ? {
+            ...liveResult,
+            cdcConfirmed:
+              liveResult.cdcConfirmed ||
+              observedReceiptIds.current.has(liveResult.receiptId),
+            mode: "live",
+          }
         : {
             ...fallbackResult,
             maneuver: memoryEnabled
@@ -461,7 +481,7 @@ export default function Home() {
     if (liveResult?.mode === "live") setMemoryPlane("live");
     await wait(reducedMotion ? 100 : 1100);
     if (liveResult?.rejected) {
-      setPhase("receipt");
+      setPhase("rejected");
       setBusy(false);
       return;
     }
@@ -503,6 +523,7 @@ export default function Home() {
 
   const activeStep = useMemo(() => {
     if (phase === "ready") return -1;
+    if (phase === "rejected") return 3;
     if (phaseAtLeast(phase, "committed")) return 4;
     return steps.findIndex((step) => step.id === phase);
   }, [phase]);
@@ -510,7 +531,9 @@ export default function Home() {
   const memoryState = phaseAtLeast(phase, "recalling") ? "done" : phase === "forecast" ? "active" : "waiting";
   const routeAState = phaseAtLeast(phase, "committed") ? "done" : phase === "race" ? "active" : "waiting";
   const routeBState = phaseAtLeast(phase, "rerouting")
-    ? phaseAtLeast(phase, "committed")
+    ? phase === "rejected"
+      ? "error"
+      : phaseAtLeast(phase, "committed")
       ? "done"
       : "active"
     : phase === "race"
@@ -569,10 +592,20 @@ export default function Home() {
           <p>Remember it before machines move.</p>
         </div>
         <div className={`mission-status ${phase}`}>
-          <span>{phase === "ready" ? "READY" : phase === "receipt" ? "PROVEN" : phase.toUpperCase()}</span>
+          <span>
+            {phase === "ready"
+              ? "READY"
+              : phase === "receipt"
+                ? "PROVEN"
+                : phase === "rejected"
+                  ? "BLOCKED"
+                  : phase.toUpperCase()}
+          </span>
           <strong>
             {phase === "ready"
               ? "Awaiting commitment"
+              : phase === "rejected"
+                ? "Unsafe future rejected"
               : phaseAtLeast(phase, "committed")
                 ? "Collision-free future"
                 : phaseAtLeast(phase, "race")
@@ -638,7 +671,7 @@ export default function Home() {
             <i aria-hidden="true" />
           </label>
 
-          <div className={`causal-link ${phaseAtLeast(phase, "rerouting") ? "active" : ""}`}>
+          <div className={`causal-link ${memoryEnabled && phaseAtLeast(phase, "rerouting") ? "active" : ""}`}>
             <span className="eyebrow">CAUSAL TRACE</span>
             <div>
               <span>{result.memoryId}</span>
@@ -669,6 +702,7 @@ export default function Home() {
               phase={phase}
               reducedMotion={reducedMotion}
               authoritative={cdcReady}
+              memoryEnabled={memoryEnabled}
             />
             <div className="agent-tag agent-a">
               <span>A</span>
@@ -684,12 +718,12 @@ export default function Home() {
               <small>minimum separation 0.0 m / required 30 m</small>
             </div>
             <div className={`memory-pulse ${phase === "recalling" ? "visible" : ""}`}>
-              <span>MEMORY FOUND</span>
-              <strong>94% ANALOGUE</strong>
+              <span>{memoryEnabled ? "MEMORY FOUND" : "MEMORY BYPASSED"}</span>
+              <strong>{memoryEnabled ? "94% ANALOGUE" : "COUNTERFACTUAL MODE"}</strong>
             </div>
             <div className={`reroute-label ${phaseAtLeast(phase, "rerouting") ? "visible" : ""}`}>
-              <span>MEMORY CHANGED ACTION</span>
-              <strong>+38 m vertical separation</strong>
+              <span>{memoryEnabled ? "MEMORY CHANGED ACTION" : "UNSAFE FUTURE BLOCKED"}</span>
+              <strong>{memoryEnabled ? "+38 m vertical separation" : "0.0 m / no movement token"}</strong>
             </div>
             <div className={`region-failure ${phaseAtLeast(phase, "failure") ? "visible" : ""}`}>
               <span className="failure-icon">×</span>
@@ -706,10 +740,10 @@ export default function Home() {
               disabled={busy && phase !== "ready"}
             >
               <span>
-                <small>{phase === "ready" ? "SPACE TO RUN" : phase === "receipt" ? "R TO RESET" : "COMMITTING"}</small>
-                <strong>{phase === "ready" ? "Commit both futures" : phase === "receipt" ? "Run the race again" : "Memory is shaping the route"}</strong>
+                <small>{phase === "ready" ? "SPACE TO RUN" : phase === "receipt" || phase === "rejected" ? "R TO RESET" : "COMMITTING"}</small>
+                <strong>{phase === "ready" ? "Commit both futures" : phase === "receipt" || phase === "rejected" ? "Run the race again" : memoryEnabled ? "Memory is shaping the route" : "Safety validation is running"}</strong>
               </span>
-              <i aria-hidden="true">{phase === "ready" ? "↗" : phase === "receipt" ? "↻" : "•••"}</i>
+              <i aria-hidden="true">{phase === "ready" ? "↗" : phase === "receipt" || phase === "rejected" ? "↻" : "•••"}</i>
             </button>
             <div className="invariant-strip">
               <div><span>MIN SEPARATION</span><strong>{phaseAtLeast(phase, "committed") ? "38.0 m" : "0.0 m"}</strong></div>
@@ -743,14 +777,16 @@ export default function Home() {
               <StatusMark state={routeBState} />
               <div>
                 <span>ROUTE B · ORBITAL-3</span>
-                <strong>{phaseAtLeast(phase, "rerouting") ? "Memory-shaped worldline" : "Original worldline"}</strong>
+                <strong>{phase === "rejected" ? "Unsafe counterfactual" : phaseAtLeast(phase, "rerouting") ? "Memory-shaped worldline" : "Original worldline"}</strong>
                 <small>Agent ingress / ap-south-1</small>
               </div>
               <b>
                 {routeBState === "done"
                   ? "COMMIT"
                   : routeBState === "error"
-                    ? "40001"
+                    ? phase === "rejected"
+                      ? "REJECT"
+                      : "40001"
                     : routeBState === "active"
                       ? "RETRY"
                       : "WAIT"}
@@ -761,13 +797,19 @@ export default function Home() {
           <div className="transaction-card">
             <div className="transaction-head">
               <span>SERIALIZABLE ADMISSION</span>
-              <strong>{phaseAtLeast(phase, "committed") ? "ATOMIC COMMIT" : "PENDING"}</strong>
+              <strong>
+                {phase === "rejected"
+                  ? "COMMIT REJECTED"
+                  : phaseAtLeast(phase, "committed")
+                    ? "ATOMIC COMMIT"
+                    : "PENDING"}
+              </strong>
             </div>
             {[
               ["Policy version", "UTM-4.7", phaseAtLeast(phase, "race")],
               ["Corridor capacity", "1 / 1", phaseAtLeast(phase, "race")],
-              ["Exclusion claims", "24 cells", phaseAtLeast(phase, "rerouting")],
-              ["Memory dependency", result.memoryId, phaseAtLeast(phase, "rerouting")],
+              ["Exclusion claims", phase === "rejected" ? "0 committed" : "24 cells", phaseAtLeast(phase, "rerouting")],
+              ["Memory dependency", phase === "rejected" ? "bypassed" : result.memoryId, phaseAtLeast(phase, "rerouting")],
               ["Command outbox", "2 signed", phaseAtLeast(phase, "committed")],
             ].map(([label, value, done]) => (
               <div className={`transaction-row ${done ? "done" : ""}`} key={String(label)}>
@@ -787,19 +829,26 @@ export default function Home() {
             <small>at-least-once · per-key ordered · deduplicated</small>
           </div>
 
-          <div className={`receipt-card ${phase === "receipt" ? "visible" : ""}`}>
+          <div className={`receipt-card ${phase === "receipt" || phase === "rejected" ? "visible" : ""}`}>
             <div className="receipt-head">
               <span>COMMIT RECEIPT</span>
               <strong>{result.receiptId}</strong>
             </div>
             <dl>
               <div><dt>Memory</dt><dd>{result.memoryId} / {result.similarity}%</dd></div>
-              <div><dt>Maneuver</dt><dd>+38 m vertical</dd></div>
+              <div><dt>Maneuver</dt><dd>{result.maneuver}</dd></div>
               <div><dt>Retry count</dt><dd>{result.retryCount}</dd></div>
               <div><dt>CDC</dt><dd>{result.cdcConfirmed ? "confirmed" : "pending"}</dd></div>
               <div><dt>HLC</dt><dd>{result.decisionHlc.slice(0, 19)}…</dd></div>
             </dl>
-            <div className="receipt-seal"><i>✓</i><span>WORLD STATE PROVEN<br /><small>MVCC + SHA-256</small></span></div>
+            <div className="receipt-seal">
+              <i>{phase === "rejected" ? "×" : "✓"}</i>
+              <span>
+                {phase === "rejected" ? "MOVEMENT BLOCKED" : "WORLD STATE PROVEN"}
+                <br />
+                <small>{phase === "rejected" ? "SAFETY INVARIANT" : "MVCC + SHA-256"}</small>
+              </span>
+            </div>
           </div>
         </aside>
       </section>

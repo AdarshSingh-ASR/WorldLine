@@ -15,12 +15,12 @@ const raceSchema = z.object({
   memoryEnabled: z.boolean().default(true),
 });
 
-function response(statusCode, body, origin = config.allowedOrigin) {
+function response(statusCode, body) {
   return {
     statusCode,
     headers: {
       "content-type": "application/json",
-      "access-control-allow-origin": origin,
+      "access-control-allow-origin": config.allowedOrigin,
       "access-control-allow-headers": "content-type,x-idempotency-key",
       "access-control-allow-methods": "GET,POST,OPTIONS",
       vary: "origin",
@@ -31,9 +31,15 @@ function response(statusCode, body, origin = config.allowedOrigin) {
 
 function parseBody(event) {
   if (!event.body) return {};
-  return JSON.parse(event.isBase64Encoded
-    ? Buffer.from(event.body, "base64").toString("utf8")
-    : event.body);
+  try {
+    return JSON.parse(event.isBase64Encoded
+      ? Buffer.from(event.body, "base64").toString("utf8")
+      : event.body);
+  } catch {
+    const error = new Error("Malformed JSON request body");
+    error.statusCode = 400;
+    throw error;
+  }
 }
 
 function fallbackRace(memoryEnabled = true) {
@@ -100,8 +106,7 @@ async function runRace(memoryEnabled) {
 }
 
 export async function handler(event) {
-  const origin = event.headers?.origin ?? config.allowedOrigin;
-  if (event.requestContext?.http?.method === "OPTIONS") return response(204, {}, origin);
+  if (event.requestContext?.http?.method === "OPTIONS") return response(204, {});
   const method = event.requestContext?.http?.method ?? event.httpMethod ?? "GET";
   const path = event.rawPath ?? event.path ?? "/";
 
@@ -113,7 +118,7 @@ export async function handler(event) {
           mode: "demo",
           database: "not-configured",
           memoryPlane: "deterministic",
-        }, origin);
+        });
       }
       return response(200, {
         ok: true,
@@ -126,7 +131,7 @@ export async function handler(event) {
         state: config.bedrockState,
         },
         region: config.awsRegion,
-      }, origin);
+      });
     }
 
     const idempotencyKey =
@@ -134,13 +139,13 @@ export async function handler(event) {
       event.headers?.["X-Idempotency-Key"];
     if (method === "POST") {
       if (!idempotencyKey) {
-        return response(400, { error: "x-idempotency-key is required" }, origin);
+        return response(400, { error: "x-idempotency-key is required" });
       }
     }
 
     if (method === "POST" && path === "/v1/demo/reset") {
       if (!repository) {
-        return response(200, { reset: true, mode: "demo" }, origin);
+        return response(200, { reset: true, mode: "demo" });
       }
       const replay = await repository.executeIdempotent({
         key: idempotencyKey,
@@ -152,13 +157,13 @@ export async function handler(event) {
       return response(replay.statusCode, {
         ...replay.body,
         idempotentReplay: replay.replayed,
-      }, origin);
+      });
     }
 
     if (method === "POST" && path === "/v1/demo/race") {
       const input = raceSchema.parse(parseBody(event));
       if (!repository) {
-        return response(200, await runRace(input.memoryEnabled), origin);
+        return response(200, await runRace(input.memoryEnabled));
       }
       const replay = await repository.executeIdempotent({
         key: idempotencyKey,
@@ -170,13 +175,13 @@ export async function handler(event) {
       return response(replay.statusCode, {
         ...replay.body,
         idempotentReplay: replay.replayed,
-      }, origin);
+      });
     }
 
     if (method === "POST" && path === "/v1/routes/plan") {
       const input = raceSchema.parse(parseBody(event));
       if (!repository) {
-        return response(200, fallbackRace(input.memoryEnabled), origin);
+        return response(200, fallbackRace(input.memoryEnabled));
       }
       const replay = await repository.executeIdempotent({
         key: idempotencyKey,
@@ -216,7 +221,7 @@ export async function handler(event) {
       return response(replay.statusCode, {
         ...replay.body,
         idempotentReplay: replay.replayed,
-      }, origin);
+      });
     }
 
     if (method === "POST" && path === "/v1/demo/broker-failure") {
@@ -225,7 +230,7 @@ export async function handler(event) {
           brokerRegion: "eu-west-1",
           state: "disconnected",
           commitmentPlane: "demo",
-        }, origin);
+        });
       }
       const input = parseBody(event);
       const replay = await repository.executeIdempotent({
@@ -238,31 +243,30 @@ export async function handler(event) {
       return response(replay.statusCode, {
         ...replay.body,
         idempotentReplay: replay.replayed,
-      }, origin);
+      });
     }
 
     if (method === "GET" && path === "/v1/world") {
-      if (!repository) return response(200, { asOf: "demo", routes: [] }, origin);
+      if (!repository) return response(200, { asOf: "demo", routes: [] });
       return response(
         200,
         await repository.getWorld(event.queryStringParameters?.as_of),
-        origin,
       );
     }
 
     const receiptMatch = path.match(/^\/v1\/receipts\/([a-zA-Z0-9-]+)$/);
     if (method === "GET" && receiptMatch) {
-      if (!repository) return response(200, fallbackRace(true), origin);
+      if (!repository) return response(200, fallbackRace(true));
       const receipt = await repository.getReceipt(receiptMatch[1]);
       return receipt
-        ? response(200, receipt, origin)
-        : response(404, { error: "Receipt not found" }, origin);
+        ? response(200, receipt)
+        : response(404, { error: "Receipt not found" });
     }
 
     const commitMatch = path.match(/^\/v1\/routes\/([a-zA-Z0-9-]+)\/(commit|extend)$/);
     if (method === "POST" && commitMatch) {
       if (!repository) {
-        return response(503, { error: "Database unavailable" }, origin);
+        return response(503, { error: "Database unavailable" });
       }
       const routeId = commitMatch[1];
       const operationName = commitMatch[2];
@@ -290,10 +294,10 @@ export async function handler(event) {
         ...replay.body,
         operation: operationName,
         idempotentReplay: replay.replayed,
-      }, origin);
+      });
     }
 
-    return response(404, { error: "Not found" }, origin);
+    return response(404, { error: "Not found" });
   } catch (error) {
     const status = error instanceof z.ZodError
       ? 400
@@ -305,7 +309,6 @@ export async function handler(event) {
         detail: error.message,
         code: error.code ?? null,
       },
-      origin,
     );
   }
 }

@@ -48,10 +48,6 @@ Resources:
       Handler: src/index.handler
       FunctionUrlConfig:
         AuthType: NONE
-        Cors:
-          AllowOrigins: [!Ref AllowedOrigin]
-          AllowHeaders: [content-type, x-idempotency-key]
-          AllowMethods: [GET, POST]
       Events:
         Proxy:
           Type: HttpApi

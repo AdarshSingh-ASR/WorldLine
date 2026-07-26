@@ -61,5 +61,8 @@ test("deterministic vector has the Titan-compatible dimension", () => {
 
 test("HLC validation rejects SQL fragments", () => {
   assert.equal(validateHlc("1785063718442913000.0000000002"), "1785063718442913000.0000000002");
-  assert.throws(() => validateHlc("now(); DROP TABLE routes"));
+  assert.throws(() => validateHlc("now(); DROP TABLE routes"), (error) => {
+    assert.equal(error.statusCode, 400);
+    return true;
+  });
 });

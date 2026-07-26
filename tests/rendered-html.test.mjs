@@ -33,6 +33,10 @@ test("server-renders the WORLDLINE memory control room", async () => {
   assert.match(html, /Commit both futures/);
   assert.match(html, /SERIALIZABLE ADMISSION/);
   assert.match(html, /CHANGEFEED WITNESS/);
+  assert.match(
+    html,
+    /rel="icon"[^>]*href="https:\/\/worldline\.example\/og\.png"/i,
+  );
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Starter Project/i);
 });
 

@@ -900,9 +900,10 @@ export class WorldlineRepository {
 
   async recordBrokerFailure(region = "eu-west-1") {
     const regions = await this.pool.query("SHOW REGIONS FROM DATABASE worldline");
+    const brokerRegion = region.startsWith("aws-") ? region : `aws-${region}`;
     const surviving = regions.rows
       .map((row) => row.database_region ?? row.region)
-      .filter((value) => value && value !== region);
+      .filter((value) => value && value !== brokerRegion);
     const timestamp = await this.pool.query(
       "SELECT cluster_logical_timestamp()::STRING AS hlc",
     );
@@ -914,7 +915,7 @@ export class WorldlineRepository {
         ) VALUES ($1, $2, 'disconnected', $3, $4, 'aws-us-east-1')
         RETURNING id, broker_region, state, surviving_regions, checked_hlc, created_at
       `,
-      [scenario.id, region, surviving, timestamp.rows[0].hlc],
+      [scenario.id, brokerRegion, surviving, timestamp.rows[0].hlc],
     );
     return {
       ...event.rows[0],
