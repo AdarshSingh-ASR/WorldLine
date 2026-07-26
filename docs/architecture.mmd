@@ -1,0 +1,19 @@
+flowchart LR
+    UI["WORLDLINE control room<br/>Sites + vinext"] --> HTTP["Amazon API Gateway<br/>HTTP API"]
+    HTTP --> LAMBDA["AWS Lambda<br/>typed regional route agent"]
+    LAMBDA --> BEDROCK["Amazon Bedrock<br/>Titan 1024d + Nova ranking"]
+    LAMBDA --> CRDB[("CockroachDB Advanced<br/>us-east-1 · eu-west-1 · ap-south-1")]
+    LAMBDA --> S3[("Amazon S3<br/>versioned receipts")]
+
+    CRDB --> VECTOR["Prefix vector index<br/>region + vehicle class"]
+    CRDB --> TXN["Serializable commitment<br/>capacity + cells + decision + outbox"]
+    CRDB --> MVCC["MVCC historical world<br/>AS OF SYSTEM TIME"]
+    CRDB --> CDC["Sinkless changefeed<br/>updated + diff + resolved"]
+
+    CDC --> ECS["ECS Fargate<br/>dedupe + resume"]
+    ECS --> WS["API Gateway<br/>WebSocket"]
+    WS --> UI
+
+    VECTOR --> LAMBDA
+    TXN --> LAMBDA
+    MVCC --> LAMBDA

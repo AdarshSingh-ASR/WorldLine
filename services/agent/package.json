@@ -1,0 +1,23 @@
+{
+  "name": "@worldline/agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "node --env-file=.env scripts/dev-server.mjs",
+    "test": "node --test test/*.test.mjs",
+    "migrate": "node --env-file=.env scripts/migrate.mjs",
+    "seed": "node --env-file=.env scripts/seed.mjs",
+    "smoke": "node --env-file=.env scripts/smoke.mjs",
+    "verify:database": "node --env-file=.env scripts/verify-database.mjs"
+  },
+  "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.850.0",
+    "@aws-sdk/client-s3": "^3.850.0",
+    "pg": "^8.16.3",
+    "zod": "^4.0.10"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "@worldline/changefeed",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/consumer.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@aws-sdk/client-apigatewaymanagementapi": "^3.850.0",
+    "pg": "^8.16.3"
+  }
+}
