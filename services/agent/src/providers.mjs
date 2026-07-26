@@ -70,7 +70,7 @@ export class WorldlineProviders {
           accept: "application/json",
           body: JSON.stringify({
             messages: [{ role: "user", content: [{ text: prompt }] }],
-            inferenceConfig: { maxTokens: 240, temperature: 0 },
+            inferenceConfig: { maxTokens: 120, temperature: 0 },
           }),
         }),
       );

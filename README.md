@@ -49,7 +49,7 @@ future the agent chose because it remembered.
 flowchart LR
     UI["WORLDLINE control room"] --> API["AWS Lambda Function URL"]
     API --> AGENT["AWS Lambda<br/>typed route agent"]
-    AGENT --> PROVIDER["Provider boundary<br/>Bedrock when authorized<br/>normalized fallback live"]
+    AGENT --> PROVIDER["Provider boundary<br/>Titan v2 + Nova Micro<br/>normalized fallback live"]
     AGENT --> CRDB[("CockroachDB Cloud<br/>three-region memory + commitments")]
     AGENT --> S3[("Versioned S3<br/>commit receipts")]
     CRDB --> CDC["Sinkless changefeed"]
@@ -120,7 +120,9 @@ The verified credit deployment uses a three-region CockroachDB Basic cluster.
 The same locality schema can be moved to Advanced when billing authorization is
 available. AWS currently reports Titan and Nova as `NOT_AUTHORIZED` for this
 account, so the live deployment uses the documented normalized 1024-dimensional
-feature-hash fallback. The Bedrock provider remains wired and activates without
+feature-hash fallback. The cost-efficient Bedrock path uses Titan Text
+Embeddings v2 for 1024-dimensional recall and Nova Micro for constrained
+maneuver ranking. The provider remains wired and activates without
 changing the safety or transaction path once account authorization is granted.
 
 ## Safety boundary
