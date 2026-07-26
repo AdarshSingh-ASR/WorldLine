@@ -39,7 +39,10 @@ export class WorldlineProviders {
         throw new Error("Unexpected embedding shape");
       }
       return { vector: payload.embedding, provider: "amazon-bedrock" };
-    } catch {
+    } catch (error) {
+      if (process.env.WORLDLINE_PROVIDER_DIAGNOSTICS === "true") {
+        console.error("WORLDLINE embedding provider fallback", error);
+      }
       return { vector: deterministicVector(text), provider: "deterministic" };
     }
   }
@@ -84,7 +87,10 @@ export class WorldlineProviders {
         causalReason: parsed.reason,
         provider: "amazon-bedrock",
       };
-    } catch {
+    } catch (error) {
+      if (process.env.WORLDLINE_PROVIDER_DIAGNOSTICS === "true") {
+        console.error("WORLDLINE ranking provider fallback", error);
+      }
       return { ...fallback, provider: "deterministic" };
     }
   }

@@ -23,8 +23,11 @@ reserves a collision-free future for multiple autonomous agents.
 - MVCC and `AS OF SYSTEM TIME` reconstruct the exact world that caused a
   decision.
 - Changefeeds independently confirm committed futures to the live interface.
-- Amazon Bedrock Titan creates 1024-dimensional scenario embeddings.
-- Amazon Nova ranks a closed set of pre-validated maneuvers.
+- A provider boundary creates normalized 1024-dimensional scenario embeddings
+  and ranks only a closed set of pre-validated maneuvers. The live credit
+  deployment uses its deterministic fallback because AWS reports Bedrock model
+  access as `NOT_AUTHORIZED`; Titan and Nova activate when the account is
+  authorized without changing the decision contract.
 - AWS Lambda is the typed decision boundary, ECS Fargate consumes CDC, API
   Gateway streams updates, and S3 stores versioned receipts.
 

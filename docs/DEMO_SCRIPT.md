@@ -12,7 +12,7 @@ Show the two cyan proposed worldlines and the future conflict at `T+14.2s`.
 
 Click **Commit both futures**.
 
-“Bedrock embeds the live geometry. CockroachDB retrieves a verified near-miss
+“The memory plane embeds the live geometry. CockroachDB retrieves a verified near-miss
 from six weeks ago: same merge angle, closing speed, crosswind, and battery
 asymmetry. That memory records which maneuver actually worked.”
 

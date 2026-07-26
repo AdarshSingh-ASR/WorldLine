@@ -4,9 +4,8 @@ Description: WORLDLINE CockroachDB changefeed projection on ECS Fargate
 Parameters:
   ChangefeedImage:
     Type: String
-  DatabaseUrl:
+  DatabaseSecretArn:
     Type: String
-    NoEcho: true
   WebSocketEndpoint:
     Type: String
   SubnetIds:
@@ -37,6 +36,14 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: worldline-read-database-secret
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref DatabaseSecretArn
 
   TaskRole:
     Type: AWS::IAM::Role
@@ -70,9 +77,10 @@ Resources:
         - Name: changefeed
           Image: !Ref ChangefeedImage
           Essential: true
-          Environment:
+          Secrets:
             - Name: WORLDLINE_DATABASE_URL
-              Value: !Ref DatabaseUrl
+              ValueFrom: !Sub "${DatabaseSecretArn}:cdcDatabaseUrl::"
+          Environment:
             - Name: WORLDLINE_WEBSOCKET_ENDPOINT
               Value: !Ref WebSocketEndpoint
             - Name: WORLDLINE_AWS_REGION
@@ -96,3 +104,9 @@ Resources:
           AssignPublicIp: ENABLED
           Subnets: !Ref SubnetIds
           SecurityGroups: !Ref SecurityGroupIds
+
+Outputs:
+  ClusterName:
+    Value: !Ref Cluster
+  ServiceName:
+    Value: !GetAtt Service.Name

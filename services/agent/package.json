@@ -10,6 +10,7 @@
     "dev": "node --env-file=.env scripts/dev-server.mjs",
     "test": "node --test test/*.test.mjs",
     "migrate": "node --env-file=.env scripts/migrate.mjs",
+    "provision:roles": "node --env-file=.env scripts/provision-roles.mjs",
     "seed": "node --env-file=.env scripts/seed.mjs",
     "smoke": "node --env-file=.env scripts/smoke.mjs",
     "verify:database": "node --env-file=.env scripts/verify-database.mjs"
@@ -17,6 +18,7 @@
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.850.0",
     "@aws-sdk/client-s3": "^3.850.0",
+    "@aws-sdk/client-secrets-manager": "^3.1095.0",
     "pg": "^8.16.3",
     "zod": "^4.0.10"
   }

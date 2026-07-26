@@ -6,6 +6,7 @@ import {
 import pg from "pg";
 import { parseChangefeedRow } from "./projection.mjs";
 
+const { Pool } = pg;
 const databaseUrl = process.env.WORLDLINE_DATABASE_URL;
 const socketEndpoint = process.env.WORLDLINE_WEBSOCKET_ENDPOINT;
 const awsRegion = process.env.WORLDLINE_AWS_REGION ?? "us-east-1";
@@ -18,13 +19,11 @@ const management = new ApiGatewayManagementApiClient({
 });
 
 async function broadcast(db, event) {
+  await db.query("DELETE FROM stream_clients WHERE expires_at <= now()");
   const clients = await db.query(
-    `
-      DELETE FROM stream_clients WHERE expires_at <= now();
-      SELECT connection_id FROM stream_clients WHERE expires_at > now();
-    `,
+    "SELECT connection_id FROM stream_clients WHERE expires_at > now()",
   );
-  const rows = clients.at(-1)?.rows ?? clients.rows ?? [];
+  const rows = clients.rows;
   const data = Buffer.from(JSON.stringify(event));
   await Promise.allSettled(
     rows.map(async ({ connection_id: connectionId }) => {
@@ -49,72 +48,113 @@ async function broadcast(db, event) {
   );
 }
 
-async function start() {
-  const client = new pg.Client({
+async function consumeOnce(controlPool) {
+  const feedClient = new pg.Client({
     connectionString: databaseUrl,
     application_name: "worldline-changefeed",
   });
-  await client.connect();
-  await client.query("SET results_buffer_size = '0'");
+  try {
+    await feedClient.connect();
 
-  const cursor = await client
-    .query(
-      `
-        SELECT max(mvcc_timestamp) AS cursor
-          FROM cdc_confirmations
-      `,
-    )
-    .then((result) => result.rows[0]?.cursor);
-  const cursorOption = cursor ? `cursor='${cursor}',` : "";
-  const sql = `
-    CREATE CHANGEFEED FOR
-      route_decisions,
-      occupancy_claims,
-      commit_receipts
-    WITH ${cursorOption}
-      updated,
-      diff,
-      resolved='1s',
-      min_checkpoint_frequency='1s',
-      envelope='wrapped'
-  `;
-  const query = client.query(new pg.Query(sql));
-  query.on("row", async (row) => {
-    try {
-      const event = parseChangefeedRow(row);
-      if (event.type === "resolved") {
-        await broadcast(client, event);
-        return;
-      }
-      const inserted = await client.query(
+    const cursor = await controlPool
+      .query(
         `
-          INSERT INTO cdc_confirmations (
-            source_table, source_key, mvcc_timestamp, event_op, payload
-          ) VALUES ($1, $2, $3, $4, $5)
-          ON CONFLICT DO NOTHING
-          RETURNING source_key
+          SELECT max(mvcc_timestamp) AS cursor
+            FROM cdc_confirmations
         `,
-        [
-          event.sourceTable,
-          event.sourceKey,
-          event.mvccTimestamp,
-          event.eventOp,
-          event.payload,
-        ],
-      );
-      if (inserted.rowCount > 0) await broadcast(client, event);
+      )
+      .then((result) => result.rows[0]?.cursor);
+    const cursorOption = cursor ? `cursor='${cursor}',` : "";
+    const sql = `
+      CREATE CHANGEFEED FOR
+        route_decisions,
+        occupancy_claims,
+        commit_receipts
+      WITH ${cursorOption}
+        updated,
+        diff,
+        resolved='1s',
+        min_checkpoint_frequency='1s',
+        envelope='wrapped'
+    `;
+    await new Promise((resolve, reject) => {
+      const query = feedClient.query(new pg.Query(sql));
+      let processing = Promise.resolve();
+      query.on("row", (row) => {
+        processing = processing
+          .then(async () => {
+            const event = parseChangefeedRow(row);
+            if (event.type === "resolved") {
+              await broadcast(controlPool, event);
+              return;
+            }
+            const inserted = await controlPool.query(
+              `
+                INSERT INTO cdc_confirmations (
+                  source_table, source_key, mvcc_timestamp, event_op, payload,
+                  crdb_region
+                ) VALUES ($1, $2, $3, $4, $5, 'aws-us-east-1')
+                ON CONFLICT DO NOTHING
+                RETURNING source_key
+              `,
+              [
+                event.sourceTable,
+                event.sourceKey,
+                event.mvccTimestamp,
+                event.eventOp,
+                JSON.stringify(event.payload),
+              ],
+            );
+            if (
+              inserted.rowCount > 0 &&
+              event.sourceTable === "commit_receipts"
+            ) {
+              await controlPool.query(
+                `
+                  UPDATE commit_receipts
+                     SET cdc_confirmed = true
+                   WHERE id = $1 AND cdc_confirmed = false
+                `,
+                [event.sourceKey],
+              );
+            }
+            if (inserted.rowCount > 0) await broadcast(controlPool, event);
+          })
+          .catch((error) => {
+            console.error("changefeed event failed", error);
+          });
+      });
+      query.once("error", (error) => {
+        processing.finally(() => reject(error));
+      });
+      query.once("end", () => {
+        processing.finally(resolve);
+      });
+    });
+  } finally {
+    await feedClient.end().catch(() => {});
+  }
+}
+
+async function start() {
+  const controlPool = new Pool({
+    connectionString: databaseUrl,
+    application_name: "worldline-changefeed-control",
+    max: 4,
+    idleTimeoutMillis: 20_000,
+    connectionTimeoutMillis: 8_000,
+  });
+  let delayMs = 500;
+  while (true) {
+    try {
+      await consumeOnce(controlPool);
+      throw new Error("changefeed ended");
     } catch (error) {
-      console.error("changefeed event failed", error);
+      console.error("changefeed reconnecting", error);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      delayMs = Math.min(delayMs * 2, 15_000);
     }
-  });
-  query.on("error", (error) => {
-    console.error("changefeed stopped", error);
-    process.exitCode = 1;
-  });
-  query.on("end", () => {
-    console.error("changefeed ended");
-    process.exitCode = 1;
-  });
+  }
 }
 
 await start();

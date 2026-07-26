@@ -23,9 +23,12 @@ type RaceResult = {
   retryCount: number;
   cdcConfirmed: boolean;
   mode: "live" | "demo";
+  rejected?: boolean;
 };
 
 const API_BASE = process.env.NEXT_PUBLIC_WORLDLINE_API_URL?.replace(/\/$/, "") ?? "";
+const WEBSOCKET_URL =
+  process.env.NEXT_PUBLIC_WORLDLINE_WEBSOCKET_URL?.replace(/\/$/, "") ?? "";
 
 const fallbackResult: RaceResult = {
   runId: "WL-2047",
@@ -70,9 +73,11 @@ function phaseAtLeast(current: Phase, target: Phase) {
 function WorldlineCanvas({
   phase,
   reducedMotion,
+  authoritative,
 }: {
   phase: Phase;
   reducedMotion: boolean;
+  authoritative: boolean;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -288,15 +293,15 @@ function WorldlineCanvas({
           safeB,
           width,
           height,
-          phaseAtLeast(phase, "committed") ? "#caff58" : "#f4bd4f",
-          phaseAtLeast(phase, "committed") ? 3 : 2,
-          phaseAtLeast(phase, "committed") ? [] : [6, 5],
+          phaseAtLeast(phase, "committed") && authoritative ? "#caff58" : "#f4bd4f",
+          phaseAtLeast(phase, "committed") && authoritative ? 3 : 2,
+          phaseAtLeast(phase, "committed") && authoritative ? [] : [6, 5],
           18,
           Math.min(1, 0.25 + Math.max(0, elapsed) * 0.55),
         );
       }
 
-      if (phaseAtLeast(phase, "committed")) {
+      if (phaseAtLeast(phase, "committed") && authoritative) {
         polyline(routeA, width, height, "#caff58", 3, [], 16);
         const travel = reducedMotion ? 0.66 : ((elapsed * 0.09) % 0.88) + 0.05;
         drawDrone(routeA, travel, width, height, "#caff58");
@@ -322,7 +327,7 @@ function WorldlineCanvas({
       window.removeEventListener("resize", resize);
       window.cancelAnimationFrame(animationFrame);
     };
-  }, [phase, reducedMotion]);
+  }, [authoritative, phase, reducedMotion]);
 
   return (
     <canvas
@@ -346,12 +351,55 @@ export default function Home() {
     () => typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
   );
   const [clock, setClock] = useState("00:00:00Z");
+  const [memoryPlane, setMemoryPlane] = useState<"connecting" | "live" | "degraded" | "demo">(
+    API_BASE ? "connecting" : "demo",
+  );
+  const [regionCount, setRegionCount] = useState(3);
 
   useEffect(() => {
     const query = window.matchMedia("(prefers-reduced-motion: reduce)");
     const listener = (event: MediaQueryListEvent) => setReducedMotion(event.matches);
     query.addEventListener("change", listener);
     return () => query.removeEventListener("change", listener);
+  }, []);
+
+  useEffect(() => {
+    if (!API_BASE) return;
+    const controller = new AbortController();
+    fetch(`${API_BASE}/health`, { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("health check failed");
+        const health = await response.json();
+        setMemoryPlane(health.mode === "live" ? "live" : "degraded");
+        const regions = health.database?.regions;
+        if (Array.isArray(regions) && regions.length > 0) {
+          setRegionCount(regions.length);
+        }
+      })
+      .catch((error) => {
+        if (error.name !== "AbortError") setMemoryPlane("degraded");
+      });
+    return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
+    if (!WEBSOCKET_URL) return;
+    const socket = new WebSocket(`${WEBSOCKET_URL}?region=web`);
+    socket.onmessage = (message) => {
+      try {
+        const event = JSON.parse(message.data);
+        if (event.sourceTable === "commit_receipts") {
+          setResult((current) =>
+            current.receiptId === event.sourceKey
+              ? { ...current, cdcConfirmed: true }
+              : current,
+          );
+        }
+      } catch {
+        // Resolved timestamps and malformed client messages are non-authoritative.
+      }
+    };
+    return () => socket.close();
   }, []);
 
   useEffect(() => {
@@ -389,8 +437,10 @@ export default function Home() {
           body: JSON.stringify({ memoryEnabled }),
         });
         if (response.ok) liveResult = (await response.json()) as RaceResult;
+        if (!response.ok) setMemoryPlane("degraded");
       } catch {
         liveResult = null;
+        setMemoryPlane("degraded");
       }
     }
 
@@ -408,10 +458,26 @@ export default function Home() {
               : "Deterministic emergency hold / +0 m",
           },
     );
+    if (liveResult?.mode === "live") setMemoryPlane("live");
     await wait(reducedMotion ? 100 : 1100);
+    if (liveResult?.rejected) {
+      setPhase("receipt");
+      setBusy(false);
+      return;
+    }
     setPhase("committed");
     await wait(reducedMotion ? 100 : 1200);
     setPhase("failure");
+    if (API_BASE && liveResult?.mode === "live") {
+      await fetch(`${API_BASE}/v1/demo/broker-failure`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-idempotency-key": `worldline-broker-${crypto.randomUUID()}`,
+        },
+        body: JSON.stringify({ region: "eu-west-1" }),
+      }).catch(() => {});
+    }
     await wait(reducedMotion ? 100 : 850);
     setPhase("receipt");
     setBusy(false);
@@ -450,6 +516,11 @@ export default function Home() {
     : phase === "race"
       ? "error"
       : "waiting";
+  const live = memoryPlane === "live" || result.mode === "live";
+  const cdcReady =
+    result.mode === "live"
+      ? result.cdcConfirmed
+      : phaseAtLeast(phase, "committed");
 
   return (
     <main className={`control-room phase-${phase}`}>
@@ -466,8 +537,16 @@ export default function Home() {
           </div>
         </div>
         <div className="system-line" aria-label="System status">
-          <span className={`live-beacon ${result.mode}`} />
-          <strong>{result.mode === "live" ? "MEMORY PLANE LIVE" : "DETERMINISTIC DEMO"}</strong>
+          <span className={`live-beacon ${live ? "live" : "demo"}`} />
+          <strong>
+            {live
+              ? "MEMORY PLANE LIVE"
+              : memoryPlane === "connecting"
+                ? "CONNECTING MEMORY PLANE"
+                : memoryPlane === "degraded"
+                  ? "MEMORY PLANE DEGRADED"
+                  : "DETERMINISTIC DEMO"}
+          </strong>
           <span>/</span>
           <span>COCKROACHDB</span>
           <span>/</span>
@@ -475,7 +554,7 @@ export default function Home() {
         </div>
         <div className="top-meta">
           <span>{clock}</span>
-          <span className="region-stack"><i />3 REGIONS</span>
+          <span className="region-stack"><i />{regionCount} REGIONS</span>
         </div>
       </header>
 
@@ -586,7 +665,11 @@ export default function Home() {
           </div>
 
           <div className="canvas-wrap">
-            <WorldlineCanvas phase={phase} reducedMotion={reducedMotion} />
+            <WorldlineCanvas
+              phase={phase}
+              reducedMotion={reducedMotion}
+              authoritative={cdcReady}
+            />
             <div className="agent-tag agent-a">
               <span>A</span>
               <div><strong>KESTREL-7</strong><small>us-east-1</small></div>
@@ -695,10 +778,10 @@ export default function Home() {
             ))}
           </div>
 
-          <div className={`cdc-card ${phaseAtLeast(phase, "committed") ? "active" : ""}`}>
+          <div className={`cdc-card ${cdcReady ? "active" : ""}`}>
             <div>
               <span className="eyebrow">CHANGEFEED WITNESS</span>
-              <strong>{phaseAtLeast(phase, "committed") ? "COMMIT OBSERVED" : "AWAITING MVCC EVENT"}</strong>
+              <strong>{cdcReady ? "COMMIT OBSERVED" : "AWAITING MVCC EVENT"}</strong>
             </div>
             <span className="cdc-wave"><i /><i /><i /><i /><i /></span>
             <small>at-least-once · per-key ordered · deduplicated</small>
@@ -713,7 +796,7 @@ export default function Home() {
               <div><dt>Memory</dt><dd>{result.memoryId} / {result.similarity}%</dd></div>
               <div><dt>Maneuver</dt><dd>+38 m vertical</dd></div>
               <div><dt>Retry count</dt><dd>{result.retryCount}</dd></div>
-              <div><dt>CDC</dt><dd>confirmed</dd></div>
+              <div><dt>CDC</dt><dd>{result.cdcConfirmed ? "confirmed" : "pending"}</dd></div>
               <div><dt>HLC</dt><dd>{result.decisionHlc.slice(0, 19)}…</dd></div>
             </dl>
             <div className="receipt-seal"><i>✓</i><span>WORLD STATE PROVEN<br /><small>MVCC + SHA-256</small></span></div>

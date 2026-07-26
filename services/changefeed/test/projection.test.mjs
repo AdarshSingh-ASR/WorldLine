@@ -4,15 +4,15 @@ import { parseChangefeedRow, projectionKey } from "../src/projection.mjs";
 
 test("normalizes and keys a wrapped CockroachDB changefeed event", () => {
   const event = parseChangefeedRow({
-    topic: "worldline.public.commit_receipts",
-    key: '["receipt-1"]',
-    value: JSON.stringify({
+    topic: Buffer.from("worldline.public.commit_receipts"),
+    key: Buffer.from('["aws-us-east-1","receipt-1"]'),
+    value: Buffer.from(JSON.stringify({
       payload: {
         after: { id: "receipt-1", state: "committed" },
         before: null,
         updated: "1785063718442913000.0000000002",
       },
-    }),
+    })),
   });
   assert.equal(event.sourceTable, "commit_receipts");
   assert.equal(event.sourceKey, "receipt-1");

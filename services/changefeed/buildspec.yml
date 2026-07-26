@@ -1,0 +1,10 @@
+version: 0.2
+
+phases:
+  pre_build:
+    commands:
+      - aws ecr get-login-password --region "$WORLDLINE_AWS_REGION" | docker login --username AWS --password-stdin "${WORLDLINE_ECR_URI%/*}"
+  build:
+    commands:
+      - docker build -t "$WORLDLINE_ECR_URI:latest" .
+      - docker push "$WORLDLINE_ECR_URI:latest"

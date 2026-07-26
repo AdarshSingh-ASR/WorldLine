@@ -25,15 +25,18 @@ export const maneuvers = [
 ];
 
 export function deterministicVector(text, dimensions = 1024) {
-  const values = new Array(dimensions);
-  let digest = createHash("sha256").update(text).digest();
-  for (let index = 0; index < dimensions; index += 1) {
-    if (index > 0 && index % digest.length === 0) {
-      digest = createHash("sha256").update(digest).digest();
-    }
-    values[index] = Number((((digest[index % digest.length] / 255) * 2 - 1) * 0.08).toFixed(6));
+  const values = new Array(dimensions).fill(0);
+  const features = String(text)
+    .toLowerCase()
+    .match(/[a-z0-9]+(?:\.[0-9]+)?/g) ?? [];
+  for (const feature of features) {
+    const digest = createHash("sha256").update(feature).digest();
+    const index = digest.readUInt32BE(0) % dimensions;
+    const direction = (digest[4] & 1) === 0 ? 1 : -1;
+    values[index] += direction;
   }
-  return values;
+  const norm = Math.sqrt(values.reduce((sum, value) => sum + value ** 2, 0)) || 1;
+  return values.map((value) => Number((value / norm).toFixed(6)));
 }
 
 export function vectorLiteral(vector) {

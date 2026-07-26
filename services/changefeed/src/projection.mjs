@@ -1,15 +1,22 @@
+function decodeJson(value) {
+  const decoded = Buffer.isBuffer(value) ? value.toString("utf8") : value;
+  return typeof decoded === "string" ? JSON.parse(decoded) : decoded;
+}
+
 export function parseChangefeedRow(row) {
-  const topic = row.topic ?? row.table ?? "unknown";
-  const key = typeof row.key === "string" ? JSON.parse(row.key) : row.key;
-  const value = typeof row.value === "string" ? JSON.parse(row.value) : row.value;
+  const topicValue = row.topic ?? row.table ?? "unknown";
+  const topic = Buffer.isBuffer(topicValue)
+    ? topicValue.toString("utf8")
+    : topicValue;
+  const key = decodeJson(row.key);
+  const value = decodeJson(row.value);
   if (!value && row.resolved) {
     return { type: "resolved", resolved: row.resolved };
   }
   const payload = value?.payload ?? value ?? {};
   const after = payload.after ?? payload;
-  const sourceKey = Array.isArray(key)
-    ? String(key[0])
-    : String(key?.id ?? after?.id ?? "unknown");
+  const keyValue = Array.isArray(key) ? key.at(-1) : key?.id ?? key;
+  const sourceKey = String(after?.id ?? keyValue ?? "unknown");
   return {
     type: "row",
     sourceTable: String(topic).split(".").at(-1),

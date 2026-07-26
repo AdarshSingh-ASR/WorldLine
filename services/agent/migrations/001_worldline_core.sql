@@ -1,3 +1,5 @@
+SET CLUSTER SETTING feature.vector_index.enabled = true;
+
 CREATE TABLE IF NOT EXISTS maneuver_memories (
   id STRING PRIMARY KEY,
   home_region STRING NOT NULL,
@@ -16,14 +18,6 @@ CREATE TABLE IF NOT EXISTS maneuver_memories (
   embedding VECTOR(1024) NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-
-CREATE VECTOR INDEX IF NOT EXISTS maneuver_memory_vector_idx
-  ON maneuver_memories (
-    home_region,
-    vehicle_class,
-    embedding vector_cosine_ops
-  )
-  WITH (min_partition_size = 16, max_partition_size = 128);
 
 CREATE INDEX IF NOT EXISTS maneuver_memory_geometry_idx
   ON maneuver_memories USING GIST (geometry);
@@ -74,6 +68,24 @@ CREATE TABLE IF NOT EXISTS route_requests (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT valid_request_status CHECK (status IN ('planned', 'committing', 'committed', 'rejected'))
 );
+
+CREATE TABLE IF NOT EXISTS api_idempotency (
+  idempotency_key STRING PRIMARY KEY,
+  request_method STRING NOT NULL,
+  request_path STRING NOT NULL,
+  request_hash STRING NOT NULL,
+  state STRING NOT NULL,
+  response_status INT NULL,
+  response_body JSONB NULL,
+  owner_token UUID NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  completed_at TIMESTAMPTZ NULL,
+  CONSTRAINT valid_idempotency_state CHECK (state IN ('pending', 'completed', 'failed'))
+);
+
+CREATE INDEX IF NOT EXISTS api_idempotency_created
+  ON api_idempotency (created_at DESC)
+  STORING (request_method, request_path, state, response_status);
 
 CREATE TABLE IF NOT EXISTS route_candidates (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -158,6 +170,9 @@ CREATE TABLE IF NOT EXISTS commit_receipts (
   evidence JSONB NOT NULL,
   content_hash STRING NOT NULL,
   cdc_confirmed BOOL NOT NULL DEFAULT false,
+  archived BOOL NOT NULL DEFAULT false,
+  archive_key STRING NULL,
+  archive_hash STRING NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -172,6 +187,17 @@ CREATE TABLE IF NOT EXISTS stream_clients (
   expires_at TIMESTAMPTZ NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS broker_events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  scenario_id STRING NOT NULL,
+  broker_region STRING NOT NULL,
+  state STRING NOT NULL,
+  surviving_regions STRING[] NOT NULL,
+  checked_hlc STRING NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT valid_broker_state CHECK (state IN ('connected', 'disconnected', 'recovered'))
+);
+
 CREATE TABLE IF NOT EXISTS cdc_confirmations (
   source_table STRING NOT NULL,
   source_key STRING NOT NULL,
@@ -181,3 +207,7 @@ CREATE TABLE IF NOT EXISTS cdc_confirmations (
   observed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (source_table, source_key, mvcc_timestamp)
 );
+
+CREATE INDEX IF NOT EXISTS cdc_by_observed_time
+  ON cdc_confirmations (observed_at DESC)
+  STORING (source_table, source_key, mvcc_timestamp, event_op);

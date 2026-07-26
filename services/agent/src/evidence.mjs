@@ -5,16 +5,17 @@ export async function archiveReceipt(config, receipt) {
   const body = JSON.stringify(receipt, null, 2);
   const contentHash = createHash("sha256").update(body).digest("hex");
   if (!config.receiptBucket) return { contentHash, archived: false };
+  const key = `receipts/${receipt.receiptId}.json`;
   const client = new S3Client({ region: config.awsRegion });
   await client.send(
     new PutObjectCommand({
       Bucket: config.receiptBucket,
-      Key: `receipts/${receipt.receiptId}.json`,
+      Key: key,
       Body: body,
       ContentType: "application/json",
       ServerSideEncryption: "AES256",
       Metadata: { sha256: contentHash },
     }),
   );
-  return { contentHash, archived: true };
+  return { contentHash, archived: true, key };
 }

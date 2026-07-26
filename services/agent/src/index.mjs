@@ -79,13 +79,23 @@ async function runRace(memoryEnabled) {
     memories,
     memoryEnabled,
   });
+  if (!memoryEnabled) {
+    return repository.recordCounterfactual({
+      maneuver,
+      embeddingProvider: embedded.provider,
+      plannerProvider: maneuver.provider,
+    });
+  }
   const result = await repository.runRace({
     maneuver,
     memory: memories[0] ?? null,
     embeddingProvider: embedded.provider,
     plannerProvider: maneuver.provider,
   });
-  await archiveReceipt(config, result).catch(() => {});
+  const archive = await archiveReceipt(config, result).catch(() => null);
+  if (archive) {
+    await repository.markReceiptArchived(result.receiptId, archive).catch(() => {});
+  }
   return result;
 }
 
@@ -110,29 +120,57 @@ export async function handler(event) {
         mode: "live",
         database: await repository.health(),
         memoryPlane: "cockroachdb",
+        bedrock: {
+        rankingModel: config.bedrockModelId,
+        embeddingModel: config.embedModelId,
+        state: config.bedrockState,
+        },
+        region: config.awsRegion,
       }, origin);
     }
 
+    const idempotencyKey =
+      event.headers?.["x-idempotency-key"] ??
+      event.headers?.["X-Idempotency-Key"];
     if (method === "POST") {
-      const idempotencyKey =
-        event.headers?.["x-idempotency-key"] ??
-        event.headers?.["X-Idempotency-Key"];
       if (!idempotencyKey) {
         return response(400, { error: "x-idempotency-key is required" }, origin);
       }
     }
 
     if (method === "POST" && path === "/v1/demo/reset") {
-      return response(
-        200,
-        repository ? await repository.resetDemo() : { reset: true, mode: "demo" },
-        origin,
-      );
+      if (!repository) {
+        return response(200, { reset: true, mode: "demo" }, origin);
+      }
+      const replay = await repository.executeIdempotent({
+        key: idempotencyKey,
+        method,
+        path,
+        payload: parseBody(event),
+        operation: () => repository.resetDemo(),
+      });
+      return response(replay.statusCode, {
+        ...replay.body,
+        idempotentReplay: replay.replayed,
+      }, origin);
     }
 
     if (method === "POST" && path === "/v1/demo/race") {
       const input = raceSchema.parse(parseBody(event));
-      return response(200, await runRace(input.memoryEnabled), origin);
+      if (!repository) {
+        return response(200, await runRace(input.memoryEnabled), origin);
+      }
+      const replay = await repository.executeIdempotent({
+        key: idempotencyKey,
+        method,
+        path,
+        payload: input,
+        operation: () => runRace(input.memoryEnabled),
+      });
+      return response(replay.statusCode, {
+        ...replay.body,
+        idempotentReplay: replay.replayed,
+      }, origin);
     }
 
     if (method === "POST" && path === "/v1/routes/plan") {
@@ -140,24 +178,66 @@ export async function handler(event) {
       if (!repository) {
         return response(200, fallbackRace(input.memoryEnabled), origin);
       }
-      const embedded = await providers.embedScenario(scenario.description);
-      const memories = input.memoryEnabled
-        ? await repository.retrieveMemories(embedded.vector)
-        : [];
-      const maneuver = await providers.rankManeuvers({
-        scenario,
-        memories,
-        memoryEnabled: input.memoryEnabled,
+      const replay = await repository.executeIdempotent({
+        key: idempotencyKey,
+        method,
+        path,
+        payload: input,
+        operation: async () => {
+          const embedded = await providers.embedScenario(scenario.description);
+          const memories = input.memoryEnabled
+            ? await repository.retrieveMemories(embedded.vector)
+            : [];
+          const maneuver = await providers.rankManeuvers({
+            scenario,
+            memories,
+            memoryEnabled: input.memoryEnabled,
+          });
+          const plan = await repository.savePlan({
+            idempotencyKey,
+            maneuver,
+            memory: memories[0] ?? null,
+            embeddingProvider: embedded.provider,
+            plannerProvider: maneuver.provider,
+          });
+          return {
+            ...plan,
+            scenario,
+            memories,
+            maneuver,
+            safety: validateSafety({
+              minimumSeparationM: 0,
+              maneuver,
+              batteryPct: scenario.batteryPct,
+            }),
+          };
+        },
       });
-      return response(200, {
-        scenario,
-        memories,
-        maneuver,
-        safety: validateSafety({
-          minimumSeparationM: 0,
-          maneuver,
-          batteryPct: scenario.batteryPct,
-        }),
+      return response(replay.statusCode, {
+        ...replay.body,
+        idempotentReplay: replay.replayed,
+      }, origin);
+    }
+
+    if (method === "POST" && path === "/v1/demo/broker-failure") {
+      if (!repository) {
+        return response(200, {
+          brokerRegion: "eu-west-1",
+          state: "disconnected",
+          commitmentPlane: "demo",
+        }, origin);
+      }
+      const input = parseBody(event);
+      const replay = await repository.executeIdempotent({
+        key: idempotencyKey,
+        method,
+        path,
+        payload: input,
+        operation: () => repository.recordBrokerFailure(input.region ?? "eu-west-1"),
+      });
+      return response(replay.statusCode, {
+        ...replay.body,
+        idempotentReplay: replay.replayed,
       }, origin);
     }
 
@@ -181,21 +261,43 @@ export async function handler(event) {
 
     const commitMatch = path.match(/^\/v1\/routes\/([a-zA-Z0-9-]+)\/(commit|extend)$/);
     if (method === "POST" && commitMatch) {
-      return response(
-        202,
-        {
-          routeId: commitMatch[1],
-          operation: commitMatch[2],
-          state: "accepted",
-          message: "Use the typed planner and serializable admission path.",
+      if (!repository) {
+        return response(503, { error: "Database unavailable" }, origin);
+      }
+      const routeId = commitMatch[1];
+      const operationName = commitMatch[2];
+      const replay = await repository.executeIdempotent({
+        key: idempotencyKey,
+        method,
+        path,
+        payload: parseBody(event),
+        operation: async () => {
+          if (operationName === "extend") {
+            return repository.extendRoute(routeId);
+          }
+          const committed = await repository.commitPlannedRoute(routeId);
+          const archive = await archiveReceipt(config, committed).catch(() => null);
+          if (archive) {
+            await repository.markReceiptArchived(
+              committed.receiptId,
+              archive,
+            ).catch(() => {});
+          }
+          return committed;
         },
-        origin,
-      );
+      });
+      return response(replay.statusCode, {
+        ...replay.body,
+        operation: operationName,
+        idempotentReplay: replay.replayed,
+      }, origin);
     }
 
     return response(404, { error: "Not found" }, origin);
   } catch (error) {
-    const status = error instanceof z.ZodError ? 400 : 500;
+    const status = error instanceof z.ZodError
+      ? 400
+      : Number(error.statusCode ?? 500);
     return response(
       status,
       {

@@ -14,8 +14,8 @@ This repository is a standalone project for the
 
 1. Two regional drone agents propose routes through the same future exclusion
    volume.
-2. Bedrock embeds the live geometry and CockroachDB retrieves a 94%-similar
-   verified near-miss from its distributed vector index.
+2. The memory plane embeds the live geometry and CockroachDB retrieves a
+   genuinely 94%-similar verified near-miss from its distributed vector index.
 3. That memory selects a vertical-separation maneuver from a closed candidate
    set.
 4. The original routes race through two real serializable transactions.
@@ -47,10 +47,10 @@ future the agent chose because it remembered.
 
 ```mermaid
 flowchart LR
-    UI["WORLDLINE control room"] --> API["AWS API Gateway"]
+    UI["WORLDLINE control room"] --> API["AWS Lambda Function URL"]
     API --> AGENT["AWS Lambda<br/>typed route agent"]
-    AGENT --> BEDROCK["Amazon Bedrock<br/>Titan embeddings + Nova ranking"]
-    AGENT --> CRDB[("CockroachDB Advanced<br/>multi-region memory + commitments")]
+    AGENT --> PROVIDER["Provider boundary<br/>Bedrock when authorized<br/>normalized fallback live"]
+    AGENT --> CRDB[("CockroachDB Cloud<br/>three-region memory + commitments")]
     AGENT --> S3[("Versioned S3<br/>commit receipts")]
     CRDB --> CDC["Sinkless changefeed"]
     CDC --> ECS["ECS Fargate<br/>idempotent projection"]
@@ -115,6 +115,13 @@ transactions.
 
 Production requires separate runtime, migration, CDC, and audit database
 identities. Never use an administrator connection in application code.
+
+The verified credit deployment uses a three-region CockroachDB Basic cluster.
+The same locality schema can be moved to Advanced when billing authorization is
+available. AWS currently reports Titan and Nova as `NOT_AUTHORIZED` for this
+account, so the live deployment uses the documented normalized 1024-dimensional
+feature-hash fallback. The Bedrock provider remains wired and activates without
+changing the safety or transaction path once account authorization is granted.
 
 ## Safety boundary
 

@@ -1,17 +1,29 @@
-ALTER DATABASE worldline PRIMARY REGION "us-east-1";
-ALTER DATABASE worldline ADD REGION IF NOT EXISTS "eu-west-1";
-ALTER DATABASE worldline ADD REGION IF NOT EXISTS "ap-south-1";
+ALTER DATABASE worldline ADD REGION IF NOT EXISTS "aws-us-east-1";
+ALTER DATABASE worldline ADD REGION IF NOT EXISTS "aws-eu-west-1";
+ALTER DATABASE worldline ADD REGION IF NOT EXISTS "aws-ap-south-1";
+ALTER DATABASE worldline PRIMARY REGION "aws-us-east-1";
 ALTER DATABASE worldline SURVIVE REGION FAILURE;
 
 ALTER TABLE maneuver_memories SET LOCALITY REGIONAL BY ROW;
 ALTER TABLE airspace_cells SET LOCALITY REGIONAL BY ROW;
 ALTER TABLE corridor_capacity SET LOCALITY REGIONAL BY ROW;
 ALTER TABLE route_requests SET LOCALITY REGIONAL BY ROW;
+ALTER TABLE api_idempotency SET LOCALITY REGIONAL BY ROW;
 ALTER TABLE route_candidates SET LOCALITY REGIONAL BY ROW;
 ALTER TABLE route_decisions SET LOCALITY REGIONAL BY ROW;
 ALTER TABLE occupancy_claims SET LOCALITY REGIONAL BY ROW;
 ALTER TABLE memory_reads SET LOCALITY REGIONAL BY ROW;
 ALTER TABLE command_outbox SET LOCALITY REGIONAL BY ROW;
 ALTER TABLE commit_receipts SET LOCALITY REGIONAL BY ROW;
+ALTER TABLE stream_clients SET LOCALITY REGIONAL BY ROW;
+ALTER TABLE broker_events SET LOCALITY REGIONAL BY ROW;
 ALTER TABLE cdc_confirmations SET LOCALITY REGIONAL BY ROW;
 ALTER TABLE safety_policies SET LOCALITY GLOBAL;
+
+CREATE VECTOR INDEX IF NOT EXISTS maneuver_memory_vector_idx
+  ON maneuver_memories (
+    home_region,
+    vehicle_class,
+    embedding vector_cosine_ops
+  )
+  WITH (min_partition_size = 16, max_partition_size = 128);

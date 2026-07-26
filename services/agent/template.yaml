@@ -3,9 +3,8 @@ Transform: AWS::Serverless-2016-10-31
 Description: WORLDLINE memory-first autonomous commitment API
 
 Parameters:
-  DatabaseUrl:
+  DatabaseSecretArn:
     Type: String
-    NoEcho: true
   AllowedOrigin:
     Type: String
     Default: "*"
@@ -20,15 +19,16 @@ Globals:
   Function:
     Runtime: nodejs24.x
     Architectures: [arm64]
-    Timeout: 29
+    Timeout: 60
     MemorySize: 768
     Environment:
       Variables:
-        WORLDLINE_DATABASE_URL: !Ref DatabaseUrl
+        WORLDLINE_DATABASE_URL: !Sub "{{resolve:secretsmanager:${DatabaseSecretArn}:SecretString:runtimeDatabaseUrl}}"
         WORLDLINE_ALLOWED_ORIGIN: !Ref AllowedOrigin
         WORLDLINE_AWS_REGION: !Ref AWS::Region
         WORLDLINE_BEDROCK_MODEL_ID: !Ref BedrockModelId
         WORLDLINE_EMBED_MODEL_ID: !Ref EmbedModelId
+        WORLDLINE_BEDROCK_STATE: "account-not-authorized"
         WORLDLINE_RECEIPT_BUCKET: !Ref ReceiptBucket
         WORLDLINE_DEMO_FALLBACK: "false"
 
@@ -46,6 +46,12 @@ Resources:
     Properties:
       CodeUri: .
       Handler: src/index.handler
+      FunctionUrlConfig:
+        AuthType: NONE
+        Cors:
+          AllowOrigins: [!Ref AllowedOrigin]
+          AllowHeaders: [content-type, x-idempotency-key]
+          AllowMethods: [GET, POST]
       Events:
         Proxy:
           Type: HttpApi
@@ -151,7 +157,13 @@ Resources:
 Outputs:
   ApiUrl:
     Value: !Sub "https://${WorldlineHttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}"
+  FunctionUrl:
+    Value: !GetAtt WorldlineAgentFunctionUrl.FunctionUrl
   ReceiptBucketName:
     Value: !Ref ReceiptBucket
   WebSocketUrl:
     Value: !Sub "wss://${WorldlineWebSocketApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/live"
+  AgentFunctionName:
+    Value: !Ref WorldlineAgentFunction
+  WebSocketFunctionName:
+    Value: !Ref WorldlineWebSocketFunction

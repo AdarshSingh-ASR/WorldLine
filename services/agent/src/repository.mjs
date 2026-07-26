@@ -1,6 +1,7 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { TwoPartyBarrier, withSerializable } from "./database.mjs";
 import {
+  maneuvers,
   validateHlc,
   validateSafety,
   vectorLiteral,
@@ -22,13 +23,25 @@ export class WorldlineRepository {
   }
 
   async health() {
-    const result = await this.pool.query(`
+    const [database, regions, cdc] = await Promise.all([
+      this.pool.query(`
       SELECT
         now() AS checked_at,
         version() AS version,
         current_database() AS database_name
-    `);
-    return result.rows[0];
+      `),
+      this.pool.query("SHOW REGIONS FROM DATABASE worldline"),
+      this.pool.query(`
+        SELECT max(observed_at) AS last_observed_at,
+               count(*)::INT AS confirmation_count
+          FROM cdc_confirmations
+      `),
+    ]);
+    return {
+      ...database.rows[0],
+      regions: regions.rows,
+      cdc: cdc.rows[0],
+    };
   }
 
   async retrieveMemories(vector) {
@@ -57,20 +70,108 @@ export class WorldlineRepository {
   }
 
   async resetDemo() {
-    await this.pool.query(
-      `
-        BEGIN;
-        DELETE FROM occupancy_claims WHERE scenario_id = $1;
-        DELETE FROM route_decisions WHERE scenario_id = $1;
-        DELETE FROM route_requests WHERE scenario_id = $1;
-        UPDATE corridor_capacity
-           SET used = 0, revision = revision + 1, updated_at = now()
-         WHERE scenario_id = $1;
-        COMMIT;
-      `,
-      [scenario.id],
-    );
+    for (const corridorId of ["X-17", "X-17-ALT"]) {
+      await this.pool.query(
+        `
+          UPDATE corridor_capacity
+             SET used = 0, revision = revision + 1, updated_at = now()
+           WHERE scenario_id = $1 AND corridor_id = $2
+        `,
+        [scenario.id, corridorId],
+      );
+    }
     return { scenarioId: scenario.id, reset: true };
+  }
+
+  async executeIdempotent({
+    key,
+    method,
+    path,
+    payload,
+    operation,
+  }) {
+    const ownerToken = randomUUID();
+    const requestHash = createHash("sha256")
+      .update(JSON.stringify(payload ?? {}))
+      .digest("hex");
+    const inserted = await this.pool.query(
+      `
+        INSERT INTO api_idempotency (
+          idempotency_key, request_method, request_path, request_hash,
+          state, owner_token, crdb_region
+        ) VALUES ($1, $2, $3, $4, 'pending', $5, 'aws-us-east-1')
+        ON CONFLICT (idempotency_key) DO NOTHING
+        RETURNING idempotency_key
+      `,
+      [key, method, path, requestHash, ownerToken],
+    );
+
+    if (inserted.rowCount === 1) {
+      try {
+        const body = await operation();
+        await this.pool.query(
+          `
+            UPDATE api_idempotency
+               SET state = 'completed',
+                   response_status = 200,
+                   response_body = $2,
+                   completed_at = now()
+             WHERE idempotency_key = $1 AND owner_token = $3
+          `,
+          [key, body, ownerToken],
+        );
+        return { statusCode: 200, body, replayed: false };
+      } catch (error) {
+        await this.pool.query(
+          `
+            UPDATE api_idempotency
+               SET state = 'failed', completed_at = now()
+             WHERE idempotency_key = $1 AND owner_token = $2
+          `,
+          [key, ownerToken],
+        ).catch(() => {});
+        throw error;
+      }
+    }
+
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const existing = await this.pool.query(
+        `
+          SELECT request_method, request_path, request_hash, state,
+                 response_status, response_body
+            FROM api_idempotency
+           WHERE idempotency_key = $1
+        `,
+        [key],
+      );
+      const row = existing.rows[0];
+      if (!row) break;
+      if (
+        row.request_method !== method ||
+        row.request_path !== path ||
+        row.request_hash !== requestHash
+      ) {
+        const error = new Error("Idempotency key was already used for a different request");
+        error.statusCode = 409;
+        throw error;
+      }
+      if (row.state === "completed") {
+        return {
+          statusCode: row.response_status,
+          body: row.response_body,
+          replayed: true,
+        };
+      }
+      if (row.state === "failed") {
+        const error = new Error("The original idempotent operation failed");
+        error.statusCode = 409;
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const error = new Error("Idempotent operation is still in progress");
+    error.statusCode = 409;
+    throw error;
   }
 
   async prepareRequests({ maneuver, memory, embeddingProvider, plannerProvider }) {
@@ -82,10 +183,10 @@ export class WorldlineRepository {
       `
         INSERT INTO route_requests (
           id, scenario_id, agent_id, home_region, vehicle_class,
-          status, idempotency_key, input
+          status, idempotency_key, input, crdb_region
         ) VALUES
-          ($1, $3, 'KESTREL-7', 'us-east-1', 'medium-cargo', 'planned', $4, $6),
-          ($2, $3, 'ORBITAL-3', 'ap-south-1', 'medium-cargo', 'planned', $5, $7)
+          ($1, $3, 'KESTREL-7', 'us-east-1', 'medium-cargo', 'planned', $4, $6, 'aws-us-east-1'),
+          ($2, $3, 'ORBITAL-3', 'ap-south-1', 'medium-cargo', 'planned', $5, $7, 'aws-us-east-1')
         ON CONFLICT (idempotency_key) DO NOTHING
       `,
       [
@@ -113,6 +214,306 @@ export class WorldlineRepository {
     return { routeA, routeB };
   }
 
+  async savePlan({
+    idempotencyKey,
+    maneuver,
+    memory,
+    embeddingProvider,
+    plannerProvider,
+  }) {
+    const routeId = randomUUID();
+    await this.pool.query(
+      `
+        INSERT INTO route_requests (
+          id, scenario_id, agent_id, home_region, vehicle_class,
+          status, idempotency_key, input, crdb_region
+        ) VALUES (
+          $1, $2, 'ORBITAL-3', 'ap-south-1', 'medium-cargo',
+          'planned', $3, $4, 'aws-us-east-1'
+        )
+      `,
+      [
+        routeId,
+        scenario.id,
+        `plan-${idempotencyKey}`,
+        {
+          scenario,
+          selectedMemoryId: memory?.id ?? null,
+          embeddingProvider,
+          plannerProvider,
+        },
+      ],
+    );
+    const ordered = [
+      maneuver,
+      ...maneuvers.filter((candidate) => candidate.id !== maneuver.id),
+    ];
+    for (let index = 0; index < ordered.length; index += 1) {
+      const candidate = ordered[index];
+      await this.pool.query(
+        `
+          INSERT INTO route_candidates (
+            route_request_id, candidate_rank, maneuver_id, cells,
+            predicted_safety, crdb_region
+          ) VALUES ($1, $2, $3, $4, $5, 'aws-us-east-1')
+        `,
+        [
+          routeId,
+          index + 1,
+          candidate.id,
+          JSON.stringify(
+            candidate.id === "MANEUVER-03"
+              ? ["X17-A-01", "X17-A-02", "X17-A-03", "X17-A-04"]
+              : ["X17-03", "X17-04", "X17-05", "X17-06"],
+          ),
+          validateSafety({
+            minimumSeparationM: 0,
+            maneuver: candidate,
+            batteryPct: scenario.batteryPct,
+          }),
+        ],
+      );
+    }
+    return { routeId, state: "planned" };
+  }
+
+  async commitPlannedRoute(routeId) {
+    const committed = await withSerializable(
+      this.pool,
+      async (client, attempt) => {
+        const plan = await client.query(
+          `
+            SELECT r.id, r.status, r.input, c.maneuver_id, c.cells,
+                   c.predicted_safety
+              FROM route_requests r
+              JOIN route_candidates c
+                ON c.route_request_id = r.id AND c.candidate_rank = 1
+             WHERE r.id = $1
+             FOR UPDATE OF r
+          `,
+          [routeId],
+        );
+        if (plan.rowCount !== 1) {
+          const error = new Error("Planned route not found");
+          error.statusCode = 404;
+          throw error;
+        }
+        if (plan.rows[0].status === "committed") {
+          const prior = await client.query(
+            `
+              SELECT r.id AS receipt_id, r.decision_hlc,
+                     d.id AS decision_id, d.corridor_id, d.safety_result
+                FROM route_decisions d
+                JOIN commit_receipts r ON r.route_decision_id = d.id
+               WHERE d.route_request_id = $1
+            `,
+            [routeId],
+          );
+          return {
+            routeId,
+            receiptId: prior.rows[0].receipt_id,
+            decisionId: prior.rows[0].decision_id,
+            decisionHlc: prior.rows[0].decision_hlc,
+            corridorId: prior.rows[0].corridor_id,
+            safety: prior.rows[0].safety_result,
+            retryCount: attempt,
+          };
+        }
+        const maneuver = maneuvers.find(
+          (candidate) => candidate.id === plan.rows[0].maneuver_id,
+        );
+        const safety = validateSafety({
+          minimumSeparationM: 0,
+          maneuver,
+          batteryPct: scenario.batteryPct,
+        });
+        if (!safety.valid) {
+          const error = new Error("Exact safety validation rejected the selected maneuver");
+          error.statusCode = 422;
+          throw error;
+        }
+        const capacity = await client.query(
+          `
+            UPDATE corridor_capacity
+               SET used = used + 1, revision = revision + 1, updated_at = now()
+             WHERE scenario_id = $1 AND corridor_id = 'X-17-ALT'
+               AND used < capacity
+            RETURNING corridor_id
+          `,
+          [scenario.id],
+        );
+        if (capacity.rowCount !== 1) {
+          const error = new Error("Corridor capacity exhausted");
+          error.code = "40001";
+          throw error;
+        }
+        const decisionId = randomUUID();
+        const receiptId = randomUUID();
+        const hlc = await client.query(
+          "SELECT cluster_logical_timestamp()::STRING AS hlc",
+        );
+        const memoryId = plan.rows[0].input?.selectedMemoryId ?? null;
+        await client.query(
+          `
+            INSERT INTO route_decisions (
+              id, scenario_id, route_request_id, agent_id, home_region,
+              corridor_id, state, selected_memory_id, maneuver_id,
+              maneuver, safety_result, retry_count, decision_hlc, crdb_region
+            ) VALUES (
+              $1, $2, $3, 'ORBITAL-3', 'ap-south-1', 'X-17-ALT',
+              'committed', $4, $5, $6, $7, $8, $9, 'aws-us-east-1'
+            )
+          `,
+          [
+            decisionId,
+            scenario.id,
+            routeId,
+            memoryId,
+            maneuver.id,
+            maneuver,
+            safety,
+            attempt,
+            hlc.rows[0].hlc,
+          ],
+        );
+        const cells = plan.rows[0].cells;
+        for (let index = 0; index < cells.length; index += 1) {
+          await client.query(
+            `
+              INSERT INTO occupancy_claims (
+                id, scenario_id, route_decision_id, cell_id, slot_start,
+                slot_end, exclusion_slot, home_region, crdb_region
+              ) VALUES (
+                gen_random_uuid(), $1, $2, $3,
+                now() + ($4::INT * interval '5 seconds'),
+                now() + (($4::INT + 1) * interval '5 seconds'),
+                0, 'us-east-1', 'aws-us-east-1'
+              )
+            `,
+            [scenario.id, decisionId, cells[index], index],
+          );
+        }
+        if (memoryId) {
+          await client.query(
+            `
+              INSERT INTO memory_reads (
+                id, memory_id, route_decision_id, rank, similarity,
+                causal_weight, exact_match, crdb_region
+              ) VALUES (
+                gen_random_uuid(), $1, $2, 1, 0.94, 1, true, 'aws-us-east-1'
+              )
+            `,
+            [memoryId, decisionId],
+          );
+        }
+        await client.query(
+          `
+            INSERT INTO command_outbox (
+              id, route_decision_id, command_type, payload, state, crdb_region
+            ) VALUES (
+              gen_random_uuid(), $1, 'movement-token',
+              $2, 'pending', 'aws-us-east-1'
+            )
+          `,
+          [decisionId, { agentId: "ORBITAL-3", corridorId: "X-17-ALT", routeId }],
+        );
+        const evidence = { routeId, maneuver, safety, memoryId };
+        const serializedEvidence = JSON.stringify(evidence);
+        const contentHash = createHash("sha256")
+          .update(serializedEvidence)
+          .digest("hex");
+        await client.query(
+          `
+            INSERT INTO commit_receipts (
+              id, scenario_id, route_decision_id, memory_id, decision_hlc,
+              evidence, content_hash, cdc_confirmed, crdb_region
+            ) VALUES (
+              $1, $2, $3, $4, $5, $6,
+              $7, false, 'aws-us-east-1'
+            )
+          `,
+          [
+            receiptId,
+            scenario.id,
+            decisionId,
+            memoryId,
+            hlc.rows[0].hlc,
+            evidence,
+            contentHash,
+          ],
+        );
+        await client.query(
+          "UPDATE route_requests SET status = 'committed' WHERE id = $1",
+          [routeId],
+        );
+        return {
+          routeId,
+          decisionId,
+          receiptId,
+          decisionHlc: hlc.rows[0].hlc,
+          corridorId: "X-17-ALT",
+          safety,
+          retryCount: attempt,
+        };
+      },
+      { priority: "NORMAL", maxAttempts: 5 },
+    );
+    return {
+      ...committed.value,
+      cdcConfirmed: await this.waitForCdc(committed.value.receiptId),
+    };
+  }
+
+  async extendRoute(routeId) {
+    const result = await withSerializable(
+      this.pool,
+      async (client) => {
+        const decision = await client.query(
+          `
+            SELECT id, corridor_id
+              FROM route_decisions
+             WHERE route_request_id = $1 AND state = 'committed'
+             FOR UPDATE
+          `,
+          [routeId],
+        );
+        if (decision.rowCount !== 1) {
+          const error = new Error("Committed route not found");
+          error.statusCode = 404;
+          throw error;
+        }
+        const horizon = await client.query(
+          `
+            SELECT coalesce(max(slot_end), now()) AS horizon
+              FROM occupancy_claims
+             WHERE route_decision_id = $1
+          `,
+          [decision.rows[0].id],
+        );
+        const claim = await client.query(
+          `
+            INSERT INTO occupancy_claims (
+              id, scenario_id, route_decision_id, cell_id, slot_start,
+              slot_end, exclusion_slot, home_region, crdb_region
+            ) VALUES (
+              gen_random_uuid(), $1, $2, 'X17-A-05', $3,
+              $3 + interval '15 seconds', 0, 'us-east-1', 'aws-us-east-1'
+            )
+            RETURNING id, slot_start, slot_end
+          `,
+          [scenario.id, decision.rows[0].id, horizon.rows[0].horizon],
+        );
+        return {
+          routeId,
+          corridorId: decision.rows[0].corridor_id,
+          horizon: claim.rows[0],
+        };
+      },
+      { maxAttempts: 5 },
+    );
+    return result.value;
+  }
+
   async runRace({ maneuver, memory, embeddingProvider, plannerProvider }) {
     await this.resetDemo();
     const { routeA, routeB } = await this.prepareRequests({
@@ -122,12 +523,24 @@ export class WorldlineRepository {
       plannerProvider,
     });
     const barrier = new TwoPartyBarrier();
+    let releaseWinner;
+    const winnerCommitted = new Promise((resolve) => {
+      releaseWinner = resolve;
+    });
 
-    const commit = async ({ routeId, agentId, priority, recalled }) =>
+    const commit = async ({
+      routeId,
+      agentId,
+      priority,
+      recalled,
+      alternate = false,
+      coordinate = true,
+      baseRetryCount = 0,
+    }) =>
       withSerializable(
         this.pool,
         async (client, attempt) => {
-          const useAlternate = recalled && attempt > 0;
+          const useAlternate = alternate;
           const corridorId = useAlternate ? "X-17-ALT" : "X-17";
           const capacity = await client.query(
             `
@@ -138,7 +551,8 @@ export class WorldlineRepository {
             [scenario.id, corridorId],
           );
           if (capacity.rowCount !== 1) throw new Error("Corridor capacity missing");
-          if (attempt === 0) await barrier.wait();
+          if (coordinate && attempt === 0) await barrier.wait();
+          if (coordinate && recalled && attempt === 0) await winnerCommitted;
 
           const claimed = await client.query(
             `
@@ -160,7 +574,7 @@ export class WorldlineRepository {
           }
 
           const safety = validateSafety({
-            minimumSeparationM: useAlternate ? 0 : agentId === "KESTREL-7" ? 38 : 0,
+            minimumSeparationM: useAlternate ? 0 : 38,
             maneuver: useAlternate
               ? maneuver
               : { altitudeDeltaM: agentId === "KESTREL-7" ? 38 : 0, energyCostPct: 0, timeDeltaS: 0 },
@@ -179,8 +593,8 @@ export class WorldlineRepository {
               INSERT INTO route_decisions (
                 id, scenario_id, route_request_id, agent_id, home_region,
                 corridor_id, state, selected_memory_id, maneuver_id,
-                maneuver, safety_result, retry_count, decision_hlc
-              ) VALUES ($1, $2, $3, $4, $5, $6, 'committed', $7, $8, $9, $10, $11, $12)
+                maneuver, safety_result, retry_count, decision_hlc, crdb_region
+              ) VALUES ($1, $2, $3, $4, $5, $6, 'committed', $7, $8, $9, $10, $11, $12, $13)
             `,
             [
               decisionId,
@@ -193,8 +607,9 @@ export class WorldlineRepository {
               useAlternate ? maneuver.id : "ORIGINAL",
               useAlternate ? maneuver : { label: "Original worldline" },
               safety,
-              attempt,
+              baseRetryCount + attempt,
               decisionHlc.rows[0].hlc,
+              "aws-us-east-1",
             ],
           );
 
@@ -208,12 +623,12 @@ export class WorldlineRepository {
               `
                 INSERT INTO occupancy_claims (
                   id, scenario_id, route_decision_id, cell_id, slot_start,
-                  slot_end, exclusion_slot, home_region
+                  slot_end, exclusion_slot, home_region, crdb_region
                 ) VALUES (
                   gen_random_uuid(), $1, $2, $3,
-                  now() + ($4 * interval '5 seconds'),
-                  now() + (($4 + 1) * interval '5 seconds'),
-                  0, $5
+                  now() + ($4::INT * interval '5 seconds'),
+                  now() + (($4::INT + 1) * interval '5 seconds'),
+                  0, $5, $6
                 )
               `,
               [
@@ -221,7 +636,8 @@ export class WorldlineRepository {
                 decisionId,
                 cells[index],
                 index,
-                agentId === "KESTREL-7" ? "us-east-1" : "ap-south-1",
+                "us-east-1",
+                "aws-us-east-1",
               ],
             );
           }
@@ -231,8 +647,8 @@ export class WorldlineRepository {
               `
                 INSERT INTO memory_reads (
                   id, memory_id, route_decision_id, rank, similarity,
-                  causal_weight, exact_match, created_at
-                ) VALUES (gen_random_uuid(), $1, $2, 1, $3, 1, true, now())
+                  causal_weight, exact_match, created_at, crdb_region
+                ) VALUES (gen_random_uuid(), $1, $2, 1, $3, 1, true, now(), 'aws-us-east-1')
               `,
               [memory.id, decisionId, memory.similarity],
             );
@@ -241,17 +657,31 @@ export class WorldlineRepository {
           await client.query(
             `
               INSERT INTO command_outbox (
-                id, route_decision_id, command_type, payload, state
-              ) VALUES ($1, $2, 'movement-token', $3, 'pending')
+                id, route_decision_id, command_type, payload, state, crdb_region
+              ) VALUES ($1, $2, 'movement-token', $3, 'pending', $4)
             `,
-            [commandId, decisionId, { agentId, corridorId, routeId }],
+            [
+              commandId,
+              decisionId,
+              { agentId, corridorId, routeId },
+              "aws-us-east-1",
+            ],
           );
+          const receiptEvidence = {
+            agentId,
+            corridorId,
+            safety,
+            useAlternate,
+          };
+          const contentHash = createHash("sha256")
+            .update(JSON.stringify(receiptEvidence))
+            .digest("hex");
           await client.query(
             `
               INSERT INTO commit_receipts (
                 id, scenario_id, route_decision_id, memory_id, decision_hlc,
-                evidence, content_hash, cdc_confirmed
-              ) VALUES ($1, $2, $3, $4, $5, $6, encode(sha256($7::BYTES), 'hex'), false)
+                evidence, content_hash, cdc_confirmed, crdb_region
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7, false, $8)
             `,
             [
               receiptId,
@@ -259,8 +689,9 @@ export class WorldlineRepository {
               decisionId,
               useAlternate ? memory?.id ?? null : null,
               decisionHlc.rows[0].hlc,
-              { agentId, corridorId, safety, useAlternate },
-              JSON.stringify({ agentId, corridorId, safety, useAlternate }),
+              receiptEvidence,
+              contentHash,
+              "aws-us-east-1",
             ],
           );
           await client.query(
@@ -277,22 +708,48 @@ export class WorldlineRepository {
             safety,
           };
         },
-        { priority, maxAttempts: 5 },
+        { priority, maxAttempts: coordinate && recalled ? 1 : 5 },
       );
 
-    const [routeAResult, routeBResult] = await Promise.all([
-      commit({
+    const routeAPromise = commit({
         routeId: routeA,
         agentId: "KESTREL-7",
-        priority: "HIGH",
+        priority: "NORMAL",
         recalled: false,
-      }),
-      commit({
+      }).then(
+        (result) => {
+          releaseWinner();
+          return result;
+        },
+        (error) => {
+          releaseWinner();
+          throw error;
+        },
+      );
+    const routeBPromise = commit({
         routeId: routeB,
         agentId: "ORBITAL-3",
-        priority: "LOW",
+        priority: "NORMAL",
         recalled: true,
-      }),
+      }).catch(async (error) => {
+        if (error?.code !== "40001") throw error;
+        const retried = await commit({
+          routeId: routeB,
+          agentId: "ORBITAL-3",
+          priority: "NORMAL",
+          recalled: true,
+          alternate: true,
+          coordinate: false,
+          baseRetryCount: 1,
+        });
+        return {
+          ...retried,
+          retryCount: retried.retryCount + 1,
+        };
+      });
+    const [routeAResult, routeBResult] = await Promise.all([
+      routeAPromise,
+      routeBPromise,
     ]);
 
     const recalledResult = routeBResult.value.useAlternate
@@ -308,6 +765,7 @@ export class WorldlineRepository {
       `,
       [recalledResult.value.receiptId],
     );
+    const cdcConfirmed = await this.waitForCdc(recalledResult.value.receiptId);
 
     return {
       runId: `WL-${String(Date.now()).slice(-4)}`,
@@ -318,9 +776,150 @@ export class WorldlineRepository {
       memoryAge: "6 weeks ago",
       maneuver: maneuver.label,
       retryCount: recalledResult.retryCount,
-      cdcConfirmed: false,
+      cdcConfirmed,
       mode: "live",
       routes: [routeAResult.value, routeBResult.value],
+    };
+  }
+
+  async recordCounterfactual({ maneuver, embeddingProvider, plannerProvider }) {
+    await this.resetDemo();
+    const routeId = randomUUID();
+    const decisionId = randomUUID();
+    const safety = validateSafety({
+      minimumSeparationM: 0,
+      maneuver,
+      batteryPct: scenario.batteryPct,
+    });
+    const timestamp = await this.pool.query(
+      "SELECT cluster_logical_timestamp()::STRING AS hlc",
+    );
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+      await client.query(
+        `
+          INSERT INTO route_requests (
+            id, scenario_id, agent_id, home_region, vehicle_class,
+            status, idempotency_key, input, crdb_region
+          ) VALUES (
+            $1, $2, 'ORBITAL-3', 'ap-south-1', 'medium-cargo',
+            'rejected', $3, $4, 'aws-us-east-1'
+          )
+        `,
+        [
+          routeId,
+          scenario.id,
+          `counterfactual-${randomUUID()}`,
+          { scenario, embeddingProvider, plannerProvider, memoryEnabled: false },
+        ],
+      );
+      await client.query(
+        `
+          INSERT INTO route_decisions (
+            id, scenario_id, route_request_id, agent_id, home_region,
+            corridor_id, state, selected_memory_id, maneuver_id,
+            maneuver, safety_result, retry_count, decision_hlc, crdb_region
+          ) VALUES (
+            $1, $2, $3, 'ORBITAL-3', 'ap-south-1',
+            'X-17', 'rejected', NULL, $4, $5, $6, 0, $7, 'aws-us-east-1'
+          )
+        `,
+        [
+          decisionId,
+          scenario.id,
+          routeId,
+          maneuver.id,
+          maneuver,
+          safety,
+          timestamp.rows[0].hlc,
+        ],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+    return {
+      runId: `WL-${String(Date.now()).slice(-4)}`,
+      receiptId: "NO-COMMIT",
+      decisionHlc: timestamp.rows[0].hlc,
+      similarity: 0,
+      memoryId: "NO-MEMORY",
+      memoryAge: "not recalled",
+      maneuver: maneuver.label,
+      retryCount: 0,
+      cdcConfirmed: false,
+      mode: "live",
+      rejected: true,
+      safety,
+      routes: [],
+    };
+  }
+
+  async waitForCdc(receiptId, timeoutMs = 6_000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const result = await this.pool.query(
+        `
+          SELECT cdc_confirmed OR EXISTS (
+            SELECT 1 FROM cdc_confirmations
+             WHERE source_table = 'commit_receipts'
+               AND source_key = $1::STRING
+          ) AS confirmed
+          FROM commit_receipts
+          WHERE id = $1::UUID
+        `,
+        [receiptId],
+      );
+      if (result.rows[0]?.confirmed) return true;
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+    return false;
+  }
+
+  async markReceiptArchived(receiptId, archive) {
+    await this.pool.query(
+      `
+        UPDATE commit_receipts
+           SET archived = $2,
+               archive_key = $3,
+               archive_hash = $4
+         WHERE id = $1
+      `,
+      [
+        receiptId,
+        Boolean(archive.archived),
+        archive.key ?? null,
+        archive.contentHash ?? null,
+      ],
+    );
+  }
+
+  async recordBrokerFailure(region = "eu-west-1") {
+    const regions = await this.pool.query("SHOW REGIONS FROM DATABASE worldline");
+    const surviving = regions.rows
+      .map((row) => row.database_region ?? row.region)
+      .filter((value) => value && value !== region);
+    const timestamp = await this.pool.query(
+      "SELECT cluster_logical_timestamp()::STRING AS hlc",
+    );
+    const event = await this.pool.query(
+      `
+        INSERT INTO broker_events (
+          scenario_id, broker_region, state, surviving_regions,
+          checked_hlc, crdb_region
+        ) VALUES ($1, $2, 'disconnected', $3, $4, 'aws-us-east-1')
+        RETURNING id, broker_region, state, surviving_regions, checked_hlc, created_at
+      `,
+      [scenario.id, region, surviving, timestamp.rows[0].hlc],
+    );
+    return {
+      ...event.rows[0],
+      commitmentPlane: "available",
+      databaseWriteVerified: true,
     };
   }
 
@@ -332,16 +931,22 @@ export class WorldlineRepository {
                maneuver, safety_result, decision_hlc, created_at
           FROM route_decisions AS OF SYSTEM TIME '${hlc}'
          WHERE scenario_id = 'ATLAS-X17'
-         ORDER BY created_at
+         ORDER BY created_at DESC
+         LIMIT 2
       `);
-      return { asOf: hlc, routes: result.rows };
+      return { asOf: hlc, routes: result.rows.reverse() };
     }
     const result = await this.pool.query(
       `
-        SELECT id, scenario_id, agent_id, corridor_id, state, selected_memory_id,
-               maneuver, safety_result, decision_hlc, created_at
-          FROM route_decisions
-         WHERE scenario_id = $1
+        SELECT *
+          FROM (
+            SELECT id, scenario_id, agent_id, corridor_id, state, selected_memory_id,
+                   maneuver, safety_result, decision_hlc, created_at
+              FROM route_decisions
+             WHERE scenario_id = $1 AND state = 'committed'
+             ORDER BY created_at DESC
+             LIMIT 2
+          ) AS current_world
          ORDER BY created_at
       `,
       [scenario.id],
@@ -353,6 +958,7 @@ export class WorldlineRepository {
     const result = await this.pool.query(
       `
         SELECT r.*, d.agent_id, d.corridor_id, d.maneuver, d.safety_result,
+               d.crdb_internal_mvcc_timestamp::STRING AS world_hlc,
                EXISTS (
                  SELECT 1 FROM cdc_confirmations c
                   WHERE c.source_table = 'commit_receipts'
@@ -364,7 +970,22 @@ export class WorldlineRepository {
       `,
       [id],
     );
-    return result.rows[0] ?? null;
+    const receipt = result.rows[0];
+    if (!receipt) return null;
+    const worldHlc = validateHlc(receipt.world_hlc);
+    const snapshot = await this.pool.query(`
+      SELECT id, scenario_id, agent_id, corridor_id, state,
+             selected_memory_id, maneuver, safety_result, decision_hlc, created_at
+        FROM route_decisions AS OF SYSTEM TIME '${worldHlc}'
+       WHERE scenario_id = 'ATLAS-X17'
+       ORDER BY created_at DESC
+       LIMIT 2
+    `);
+    return {
+      ...receipt,
+      asOf: worldHlc,
+      worldSnapshot: snapshot.rows.reverse(),
+    };
   }
 }
 
