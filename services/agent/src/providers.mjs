@@ -17,7 +17,7 @@ const rankSchema = z.object({
 export class WorldlineProviders {
   constructor(config) {
     this.config = config;
-    this.client = new BedrockRuntimeClient({ region: config.awsRegion });
+    this.client = new BedrockRuntimeClient({ region: config.bedrockRegion });
   }
 
   async embedScenario(text) {

@@ -61,6 +61,7 @@ async function consumeOnce(controlPool) {
         `
           SELECT max(mvcc_timestamp) AS cursor
             FROM cdc_confirmations
+           WHERE mvcc_timestamp ~ '^[0-9]+\\.[0-9]+$'
         `,
       )
       .then((result) => result.rows[0]?.cursor);

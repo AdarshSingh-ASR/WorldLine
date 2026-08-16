@@ -366,6 +366,7 @@ export default function Home() {
   const [memoryPlane, setMemoryPlane] = useState<"connecting" | "live" | "degraded" | "demo">(
     API_BASE ? "connecting" : "demo",
   );
+  const [modelPlaneReady, setModelPlaneReady] = useState(false);
   const [regionCount, setRegionCount] = useState(3);
   const observedReceiptIds = useRef(new Set<string>());
 
@@ -384,6 +385,7 @@ export default function Home() {
         if (!response.ok) throw new Error("health check failed");
         const health = await response.json();
         setMemoryPlane(health.mode === "live" ? "live" : "degraded");
+        setModelPlaneReady(health.bedrock?.state === "live");
         const regions = health.database?.regions;
         if (Array.isArray(regions) && regions.length > 0) {
           setRegionCount(regions.length);
@@ -539,7 +541,9 @@ export default function Home() {
     : phase === "race"
       ? "error"
       : "waiting";
-  const live = memoryPlane === "live" || result.mode === "live";
+  // A reachable API is not proof of a live model provider. The visual status
+  // only goes green after the backend reports an authorized Bedrock plane.
+  const live = memoryPlane === "live" && modelPlaneReady;
   const cdcReady =
     result.mode === "live"
       ? result.cdcConfirmed
@@ -566,8 +570,10 @@ export default function Home() {
               ? "MEMORY PLANE LIVE"
               : memoryPlane === "connecting"
                 ? "CONNECTING MEMORY PLANE"
-                : memoryPlane === "degraded"
+              : memoryPlane === "degraded"
                   ? "MEMORY PLANE DEGRADED"
+                  : memoryPlane === "live"
+                    ? "MODEL AUTHORIZATION PENDING"
                   : "DETERMINISTIC DEMO"}
           </strong>
           <span>/</span>
@@ -599,6 +605,8 @@ export default function Home() {
                 ? "PROVEN"
                 : phase === "rejected"
                   ? "BLOCKED"
+                  : phase === "failure"
+                    ? "BROKER OFFLINE"
                   : phase.toUpperCase()}
           </span>
           <strong>

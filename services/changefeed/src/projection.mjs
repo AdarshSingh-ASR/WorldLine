@@ -4,15 +4,20 @@ function decodeJson(value) {
 }
 
 export function parseChangefeedRow(row) {
+  // CockroachDB emits resolved timestamps as an envelope in `value` for the
+  // pg client used by the sinkless changefeed. Treat it as a progress marker,
+  // never as a database row to project.
+  const rawValue = decodeJson(row.value);
+  const resolved = row.resolved ?? rawValue?.resolved;
+  if (resolved) {
+    return { type: "resolved", resolved: String(resolved) };
+  }
   const topicValue = row.topic ?? row.table ?? "unknown";
   const topic = Buffer.isBuffer(topicValue)
     ? topicValue.toString("utf8")
     : topicValue;
   const key = decodeJson(row.key);
-  const value = decodeJson(row.value);
-  if (!value && row.resolved) {
-    return { type: "resolved", resolved: row.resolved };
-  }
+  const value = rawValue;
   const payload = value?.payload ?? value ?? {};
   const after = payload.after ?? payload;
   const keyValue = Array.isArray(key) ? key.at(-1) : key?.id ?? key;

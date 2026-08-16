@@ -10,13 +10,16 @@ Parameters:
     Default: "*"
   BedrockModelId:
     Type: String
-    Default: us.amazon.nova-micro-v1:0
+    Default: eu.amazon.nova-micro-v1:0
+  BedrockRegion:
+    Type: String
+    Default: eu-west-1
   EmbedModelId:
     Type: String
     Default: amazon.titan-embed-text-v2:0
   BedrockState:
     Type: String
-    Default: support-case-required
+    Default: live
     AllowedValues:
       - support-case-required
       - live
@@ -32,6 +35,7 @@ Globals:
         WORLDLINE_DATABASE_URL: !Sub "{{resolve:secretsmanager:${DatabaseSecretArn}:SecretString:runtimeDatabaseUrl}}"
         WORLDLINE_ALLOWED_ORIGIN: !Ref AllowedOrigin
         WORLDLINE_AWS_REGION: !Ref AWS::Region
+        WORLDLINE_BEDROCK_REGION: !Ref BedrockRegion
         WORLDLINE_BEDROCK_MODEL_ID: !Ref BedrockModelId
         WORLDLINE_EMBED_MODEL_ID: !Ref EmbedModelId
         WORLDLINE_BEDROCK_STATE: !Ref BedrockState

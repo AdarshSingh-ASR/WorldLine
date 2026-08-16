@@ -35,6 +35,11 @@ export class WorldlineRepository {
         SELECT max(observed_at) AS last_observed_at,
                count(*)::INT AS confirmation_count
           FROM cdc_confirmations
+         WHERE source_table IN (
+           'route_decisions',
+           'occupancy_claims',
+           'commit_receipts'
+         )
       `),
     ]);
     return {
@@ -672,6 +677,10 @@ export class WorldlineRepository {
             corridorId,
             safety,
             useAlternate,
+            providers: {
+              embedding: embeddingProvider,
+              ranking: plannerProvider,
+            },
           };
           const contentHash = createHash("sha256")
             .update(JSON.stringify(receiptEvidence))
@@ -777,6 +786,10 @@ export class WorldlineRepository {
       maneuver: maneuver.label,
       retryCount: recalledResult.retryCount,
       cdcConfirmed,
+      providers: {
+        embedding: embeddingProvider,
+        ranking: plannerProvider,
+      },
       mode: "live",
       routes: [routeAResult.value, routeBResult.value],
     };

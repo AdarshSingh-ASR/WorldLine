@@ -29,3 +29,12 @@ test("recognizes resolved timestamp events", () => {
     { type: "resolved", resolved: "1785063718442913000.0000000002" },
   );
 });
+
+test("recognizes a resolved timestamp wrapped in the sinkless value envelope", () => {
+  assert.deepEqual(
+    parseChangefeedRow({
+      value: Buffer.from('{"resolved":"1785063718442913000.0000000002"}'),
+    }),
+    { type: "resolved", resolved: "1785063718442913000.0000000002" },
+  );
+});

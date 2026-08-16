@@ -4,8 +4,11 @@ export function loadConfig(env = process.env) {
     migrationDatabaseUrl:
       env.WORLDLINE_MIGRATION_DATABASE_URL ?? env.WORLDLINE_DATABASE_URL ?? "",
     awsRegion: env.WORLDLINE_AWS_REGION ?? "us-east-1",
+    // Bedrock model access is granted independently per AWS region. Keep the
+    // control plane in us-east-1 while calling the authorized inference region.
+    bedrockRegion: env.WORLDLINE_BEDROCK_REGION ?? "eu-west-1",
     bedrockModelId:
-      env.WORLDLINE_BEDROCK_MODEL_ID ?? "us.amazon.nova-micro-v1:0",
+      env.WORLDLINE_BEDROCK_MODEL_ID ?? "eu.amazon.nova-micro-v1:0",
     embedModelId:
       env.WORLDLINE_EMBED_MODEL_ID ?? "amazon.titan-embed-text-v2:0",
     bedrockState: env.WORLDLINE_BEDROCK_STATE ?? "configured",
