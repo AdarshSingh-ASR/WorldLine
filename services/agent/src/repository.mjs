@@ -244,6 +244,7 @@ export class WorldlineRepository {
         {
           scenario,
           selectedMemoryId: memory?.id ?? null,
+          selectedMemorySimilarity: memory?.similarity ?? null,
           embeddingProvider,
           plannerProvider,
         },
@@ -358,6 +359,9 @@ export class WorldlineRepository {
           "SELECT cluster_logical_timestamp()::STRING AS hlc",
         );
         const memoryId = plan.rows[0].input?.selectedMemoryId ?? null;
+        const memorySimilarity = Number(
+          plan.rows[0].input?.selectedMemorySimilarity ?? 0,
+        );
         await client.query(
           `
             INSERT INTO route_decisions (
@@ -405,10 +409,10 @@ export class WorldlineRepository {
                 id, memory_id, route_decision_id, rank, similarity,
                 causal_weight, exact_match, crdb_region
               ) VALUES (
-                gen_random_uuid(), $1, $2, 1, 0.94, 1, true, 'aws-us-east-1'
+                gen_random_uuid(), $1, $2, 1, $3, 1, true, 'aws-us-east-1'
               )
             `,
-            [memoryId, decisionId],
+            [memoryId, decisionId, memorySimilarity],
           );
         }
         await client.query(
@@ -422,7 +426,17 @@ export class WorldlineRepository {
           `,
           [decisionId, { agentId: "ORBITAL-3", corridorId: "X-17-ALT", routeId }],
         );
-        const evidence = { routeId, maneuver, safety, memoryId };
+        const evidence = {
+          routeId,
+          maneuver,
+          safety,
+          memoryId,
+          memorySimilarity,
+          providers: {
+            embedding: plan.rows[0].input?.embeddingProvider ?? "unknown",
+            ranking: plan.rows[0].input?.plannerProvider ?? "unknown",
+          },
+        };
         const serializedEvidence = JSON.stringify(evidence);
         const contentHash = createHash("sha256")
           .update(serializedEvidence)

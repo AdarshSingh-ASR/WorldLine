@@ -8,7 +8,7 @@ if (!config.migrationDatabaseUrl) {
   throw new Error("WORLDLINE_MIGRATION_DATABASE_URL is required");
 }
 const text =
-  "87 degree converging merge, 18.4 meters per second closure, 11.2 knot crosswind, asymmetric battery reserve, vertical separation";
+  "87 degree converging merge, 18.4 meters per second closure, 11.2 knot crosswind, asymmetric battery reserve";
 const embedded = await new WorldlineProviders(config).embedScenario(text);
 const vector = embedded.vector;
 const client = new pg.Client({ connectionString: config.migrationDatabaseUrl });
