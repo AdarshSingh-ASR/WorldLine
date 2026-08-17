@@ -43,3 +43,6 @@ next-env.d.ts
 /outputs/
 work/
 .aws-sam/
+
+# typescript incremental build cache
+*.tsbuildinfo

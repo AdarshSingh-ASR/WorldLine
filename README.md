@@ -336,21 +336,46 @@ npm run verify:database
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/health` | Cluster reachability, regions, CDC status |
+| `GET` | `/v1/scenario` | Live scenario, agent roster, corridor capacity, active policy, closed maneuver set |
+| `GET` | `/v1/regions` | Per-region health from `SHOW REGIONS` joined with the latest broker event |
+| `GET` | `/v1/events` | Changefeed confirmations newer than a cursor — drives the live indicator |
 | `GET` | `/v1/world` | Current authoritative world, read at a pinned HLC |
 | `POST` | `/v1/routes/plan` | Recall memory → rank maneuver → validate → admit |
 | `POST` | `/v1/routes/{id}/commit` | Commit a planned future |
 | `POST` | `/v1/routes/{id}/extend` | Extend a rolling-horizon reservation |
 | `GET` | `/v1/receipts/{id}` | Full provenance chain for one decision |
 | `POST` | `/v1/demo/race` | Run the two-agent contention scenario |
-| `POST` | `/v1/demo/broker-failure` | Simulate losing a region's broker |
+| `POST` | `/v1/demo/broker-failure` | Take a region's broker offline (writes `broker_events`) |
+| `POST` | `/v1/demo/broker-recover` | Bring a region's broker back online |
 | `POST` | `/v1/demo/reset` | Reset corridor capacity |
 
-All mutating routes accept an idempotency key.
+All mutating routes require an `x-idempotency-key` header.
+
+### The control room reads only committed state
+
+The interface has no seeded scenario and no simulated pacing. Every value it
+renders — routes, corridors, agents, regions, similarity scores, retry counts,
+HLC timestamps, receipts — arrives from the endpoints above. Phase transitions
+are driven by request lifecycles rather than timers, the route that bends is the
+one the database actually returned with `useAlternate`, the bend magnitude is
+the real `achievedSeparationM`, and the live indicator only advances when
+`/v1/events` reports genuinely new CDC rows.
+
+If the agent has no database, it answers `503` instead of fabricating a
+decision, and the control room renders an explicit unavailable state.
+`WORLDLINE_DEMO_FALLBACK=true` is the only way to get synthetic responses; those
+are flagged `synthetic: true` and the interface refuses to present them as a
+commit.
 
 ## Repository map
 
 ```text
-app/                          Interactive spacetime control room (vinext · React 19)
+app/
+  page.tsx                    Server shell
+  lib/worldline.ts            Typed agent client — the only data boundary
+  components/ControlRoom.tsx  Orchestrator, telemetry rail, transaction log
+  components/AirspaceViewport.tsx  Canvas viewport, derived geometry
+  components/ReceiptDrawer.tsx     Provenance / show-your-work surface
 worker/                       Edge entry point for the control room
 services/agent/
   src/index.mjs               Lambda HTTP boundary, typed routes

@@ -15,7 +15,10 @@ export function loadConfig(env = process.env) {
     receiptBucket: env.WORLDLINE_RECEIPT_BUCKET ?? "",
     allowedOrigin: env.WORLDLINE_ALLOWED_ORIGIN ?? "http://localhost:5174",
     port: Number(env.WORLDLINE_PORT ?? 8790),
-    demoFallback: env.WORLDLINE_DEMO_FALLBACK !== "false",
+    // Opt-in only. Without a database the agent reports unavailable rather
+    // than fabricating a decision, so the control room can never present
+    // synthetic state as a real commit.
+    demoFallback: env.WORLDLINE_DEMO_FALLBACK === "true",
     applyMultiRegion: env.WORLDLINE_APPLY_MULTI_REGION === "true",
   };
 }

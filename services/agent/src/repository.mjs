@@ -7,6 +7,20 @@ import {
   vectorLiteral,
 } from "./invariants.mjs";
 
+/**
+ * The agent roster is the single source of truth for agent identity and home
+ * region. Route insertion, decision rows and the scenario briefing all read it,
+ * so a region label can never disagree between the database and the interface.
+ */
+const agents = [
+  { id: "KESTREL-7", homeRegion: "us-east-1", role: "original" },
+  { id: "ORBITAL-3", homeRegion: "ap-south-1", role: "recalled" },
+];
+
+function homeRegionFor(agentId) {
+  return agents.find((agent) => agent.id === agentId)?.homeRegion ?? "us-east-1";
+}
+
 const scenario = {
   id: "ATLAS-X17",
   description:
@@ -190,8 +204,8 @@ export class WorldlineRepository {
           id, scenario_id, agent_id, home_region, vehicle_class,
           status, idempotency_key, input, crdb_region
         ) VALUES
-          ($1, $3, 'KESTREL-7', 'us-east-1', 'medium-cargo', 'planned', $4, $6, 'aws-us-east-1'),
-          ($2, $3, 'ORBITAL-3', 'ap-south-1', 'medium-cargo', 'planned', $5, $7, 'aws-us-east-1')
+          ($1, $3, $8, $9, 'medium-cargo', 'planned', $4, $6, 'aws-us-east-1'),
+          ($2, $3, $10, $11, 'medium-cargo', 'planned', $5, $7, 'aws-us-east-1')
         ON CONFLICT (idempotency_key) DO NOTHING
       `,
       [
@@ -214,6 +228,10 @@ export class WorldlineRepository {
           embeddingProvider,
           plannerProvider,
         },
+        agents[0].id,
+        agents[0].homeRegion,
+        agents[1].id,
+        agents[1].homeRegion,
       ],
     );
     return { routeA, routeB };
@@ -533,7 +551,13 @@ export class WorldlineRepository {
     return result.value;
   }
 
-  async runRace({ maneuver, memory, embeddingProvider, plannerProvider }) {
+  async runRace({
+    maneuver,
+    memory,
+    memories = [],
+    embeddingProvider,
+    plannerProvider,
+  }) {
     await this.resetDemo();
     const { routeA, routeB } = await this.prepareRequests({
       maneuver,
@@ -620,7 +644,7 @@ export class WorldlineRepository {
               scenario.id,
               routeId,
               agentId,
-              agentId === "KESTREL-7" ? "us-east-1" : "ap-south-1",
+              homeRegionFor(agentId),
               corridorId,
               useAlternate ? memory?.id ?? null : null,
               useAlternate ? maneuver.id : "ORIGINAL",
@@ -729,6 +753,17 @@ export class WorldlineRepository {
             decisionHlc: decisionHlc.rows[0].hlc,
             useAlternate,
             safety,
+            // Surfaced so the control room can label every route with the
+            // agent and region that actually committed it, rather than
+            // assuming a fixed two-agent demo shape.
+            agentId,
+            homeRegion: homeRegionFor(agentId),
+            maneuverId: useAlternate ? maneuver.id : "ORIGINAL",
+            maneuverLabel: useAlternate ? maneuver.label : "Original worldline",
+            selectedMemoryId: useAlternate ? memory?.id ?? null : null,
+            cells,
+            state: "committed",
+            attemptRetryCount: baseRetryCount + attempt,
           };
         },
         { priority, maxAttempts: coordinate && recalled ? 1 : 5 },
@@ -796,8 +831,15 @@ export class WorldlineRepository {
       decisionHlc: mvcc.rows[0]?.hlc ?? recalledResult.value.decisionHlc,
       similarity: Math.round(Number(memory?.similarity ?? 0) * 100),
       memoryId: memory?.id ?? "NO-MEMORY",
-      memoryAge: "6 weeks ago",
+      // The occurrence timestamp is returned verbatim so the interface can
+      // derive the real age of the recalled episode instead of asserting one.
+      memoryOccurredAt: memory?.occurredAt ?? null,
       maneuver: maneuver.label,
+      maneuverId: maneuver.id,
+      // The full candidate, so the viewport can derive the real trajectory
+      // offset instead of hardcoding a bend magnitude.
+      selectedManeuver: maneuver,
+      causalReason: maneuver.causalReason ?? null,
       retryCount: recalledResult.retryCount,
       cdcConfirmed,
       providers: {
@@ -805,7 +847,14 @@ export class WorldlineRepository {
         ranking: plannerProvider,
       },
       mode: "live",
-      routes: [routeAResult.value, routeBResult.value],
+      scenario,
+      // Every candidate the vector index returned, not just the winner, so the
+      // memory panel can show what was considered and what was rejected.
+      memories,
+      routes: [
+        { ...routeAResult.value, retryCount: routeAResult.retryCount },
+        { ...routeBResult.value, retryCount: routeBResult.retryCount },
+      ],
     };
   }
 
@@ -875,12 +924,16 @@ export class WorldlineRepository {
       decisionHlc: timestamp.rows[0].hlc,
       similarity: 0,
       memoryId: "NO-MEMORY",
-      memoryAge: "not recalled",
+      memoryOccurredAt: null,
       maneuver: maneuver.label,
+      maneuverId: maneuver.id,
+      causalReason: maneuver.causalReason ?? null,
       retryCount: 0,
       cdcConfirmed: false,
       mode: "live",
       rejected: true,
+      scenario,
+      memories: [],
       safety,
       routes: [],
     };
@@ -948,6 +1001,183 @@ export class WorldlineRepository {
       ...event.rows[0],
       commitmentPlane: "available",
       databaseWriteVerified: true,
+    };
+  }
+
+  /**
+   * Everything the interface needs to establish the situation before any
+   * commitment is attempted: the live scenario, the agents that will contend,
+   * current corridor capacity, the active safety policy and the closed
+   * maneuver candidate set.
+   */
+  async getScenarioBriefing() {
+    const [corridors, policy, cells] = await Promise.all([
+      this.pool.query(
+        `
+          SELECT corridor_id, capacity, used, revision, home_region, updated_at
+            FROM corridor_capacity
+           WHERE scenario_id = $1
+           ORDER BY corridor_id
+        `,
+        [scenario.id],
+      ),
+      this.pool.query(`
+        SELECT id, version, state, rules
+          FROM safety_policies
+         WHERE state = 'active'
+         ORDER BY updated_at DESC
+         LIMIT 1
+      `),
+      this.pool.query(`
+        SELECT id, home_region, altitude_floor_m, altitude_ceiling_m, state
+          FROM airspace_cells
+         ORDER BY id
+      `),
+    ]);
+
+    return {
+      scenario,
+      agents,
+      maneuverCandidates: maneuvers,
+      corridors: corridors.rows,
+      policy: policy.rows[0] ?? null,
+      airspaceCells: cells.rows,
+      observedAt: new Date().toISOString(),
+    };
+  }
+
+  async recordBrokerRecovery(region = "eu-west-1") {
+    const brokerRegion = region.startsWith("aws-") ? region : `aws-${region}`;
+    const regions = await this.pool.query("SHOW REGIONS FROM DATABASE worldline");
+    const surviving = regions.rows
+      .map((row) => row.database_region ?? row.region)
+      .filter(Boolean);
+    const timestamp = await this.pool.query(
+      "SELECT cluster_logical_timestamp()::STRING AS hlc",
+    );
+    const event = await this.pool.query(
+      `
+        INSERT INTO broker_events (
+          scenario_id, broker_region, state, surviving_regions,
+          checked_hlc, crdb_region
+        ) VALUES ($1, $2, 'recovered', $3, $4, 'aws-us-east-1')
+        RETURNING id, broker_region, state, surviving_regions, checked_hlc, created_at
+      `,
+      [scenario.id, brokerRegion, surviving, timestamp.rows[0].hlc],
+    );
+    return {
+      ...event.rows[0],
+      commitmentPlane: "available",
+      databaseWriteVerified: true,
+    };
+  }
+
+  /**
+   * Region health is derived from the cluster itself plus the most recent
+   * broker event per region, so the health strip reflects committed database
+   * state rather than a client-side toggle.
+   */
+  async getRegionHealth() {
+    let regionRows = [];
+    let multiRegion = true;
+    try {
+      const result = await this.pool.query(
+        "SHOW REGIONS FROM DATABASE worldline",
+      );
+      regionRows = result.rows;
+    } catch {
+      multiRegion = false;
+      const result = await this.pool
+        .query("SHOW REGIONS FROM CLUSTER")
+        .catch(() => ({ rows: [] }));
+      regionRows = result.rows;
+    }
+
+    const [brokers, survival] = await Promise.all([
+      this.pool.query(
+        `
+          SELECT DISTINCT ON (broker_region)
+                 broker_region, state, surviving_regions, checked_hlc, created_at
+            FROM broker_events
+           WHERE scenario_id = $1
+           ORDER BY broker_region, created_at DESC
+        `,
+        [scenario.id],
+      ),
+      this.pool
+        .query("SHOW SURVIVAL GOAL FROM DATABASE worldline")
+        .catch(() => ({ rows: [] })),
+    ]);
+
+    const brokerByRegion = new Map(
+      brokers.rows.map((row) => [row.broker_region, row]),
+    );
+
+    const regions = regionRows.map((row) => {
+      const name = row.database_region ?? row.region;
+      const broker = brokerByRegion.get(name) ?? null;
+      return {
+        region: name,
+        primary: Boolean(row.primary),
+        zones: row.zones ?? null,
+        // No broker event recorded means the region has never been taken
+        // offline in this scenario, so it is reported as connected.
+        state: broker?.state === "disconnected" ? "disconnected" : "connected",
+        lastEvent: broker
+          ? {
+              state: broker.state,
+              checkedHlc: broker.checked_hlc,
+              createdAt: broker.created_at,
+              survivingRegions: broker.surviving_regions,
+            }
+          : null,
+      };
+    });
+
+    return {
+      multiRegion,
+      survivalGoal: survival.rows[0]?.survival_goal ?? null,
+      regions,
+      observedAt: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * Real changefeed activity. The consumer service writes one row per observed
+   * MVCC event into cdc_confirmations; this reads rows newer than the caller's
+   * cursor. An empty result means the database genuinely produced no new
+   * events, which is why the interface can treat a rising count as proof.
+   */
+  async getEventsSince(since) {
+    const cdc = since
+      ? await this.pool.query(
+          `
+            SELECT source_table, source_key, mvcc_timestamp, event_op, observed_at
+              FROM cdc_confirmations
+             WHERE observed_at > $1
+             ORDER BY observed_at DESC
+             LIMIT 50
+          `,
+          [since],
+        )
+      : await this.pool.query(`
+          SELECT source_table, source_key, mvcc_timestamp, event_op, observed_at
+            FROM cdc_confirmations
+           ORDER BY observed_at DESC
+           LIMIT 50
+        `);
+
+    const totals = await this.pool.query(`
+      SELECT count(*)::INT AS confirmation_count,
+             max(observed_at) AS latest_observed_at
+        FROM cdc_confirmations
+    `);
+
+    return {
+      events: cdc.rows.reverse(),
+      cursor: totals.rows[0]?.latest_observed_at ?? null,
+      confirmationCount: totals.rows[0]?.confirmation_count ?? 0,
+      observedAt: new Date().toISOString(),
     };
   }
 

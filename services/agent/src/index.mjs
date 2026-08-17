@@ -63,6 +63,9 @@ function fallbackRace(memoryEnabled = true) {
     retryCount: 1,
     cdcConfirmed: true,
     mode: "demo",
+    // Explicitly flagged so the control room refuses to present this as a
+    // real commit. Only reachable with WORLDLINE_DEMO_FALLBACK=true.
+    synthetic: true,
     safety: validateSafety({
       minimumSeparationM: 0,
       maneuver,
@@ -95,6 +98,7 @@ async function runRace(memoryEnabled) {
   const result = await repository.runRace({
     maneuver,
     memory: memories[0] ?? null,
+    memories,
     embeddingProvider: embedded.provider,
     plannerProvider: maneuver.provider,
   });
@@ -239,6 +243,61 @@ export async function handler(event) {
         path,
         payload: input,
         operation: () => repository.recordBrokerFailure(input.region ?? "eu-west-1"),
+      });
+      return response(replay.statusCode, {
+        ...replay.body,
+        idempotentReplay: replay.replayed,
+      });
+    }
+
+    if (method === "GET" && path === "/v1/scenario") {
+      if (!repository) {
+        return response(503, {
+          error: "Database unavailable",
+          detail: "WORLDLINE_DATABASE_URL is not configured",
+        });
+      }
+      return response(200, await repository.getScenarioBriefing());
+    }
+
+    if (method === "GET" && path === "/v1/regions") {
+      if (!repository) {
+        return response(503, {
+          error: "Database unavailable",
+          detail: "WORLDLINE_DATABASE_URL is not configured",
+        });
+      }
+      return response(200, await repository.getRegionHealth());
+    }
+
+    if (method === "GET" && path === "/v1/events") {
+      if (!repository) {
+        return response(503, {
+          error: "Database unavailable",
+          detail: "WORLDLINE_DATABASE_URL is not configured",
+        });
+      }
+      return response(
+        200,
+        await repository.getEventsSince(event.queryStringParameters?.since),
+      );
+    }
+
+    if (method === "POST" && path === "/v1/demo/broker-recover") {
+      if (!repository) {
+        return response(503, {
+          error: "Database unavailable",
+          detail: "WORLDLINE_DATABASE_URL is not configured",
+        });
+      }
+      const input = parseBody(event);
+      const replay = await repository.executeIdempotent({
+        key: idempotencyKey,
+        method,
+        path,
+        payload: input,
+        operation: () =>
+          repository.recordBrokerRecovery(input.region ?? "eu-west-1"),
       });
       return response(replay.statusCode, {
         ...replay.body,
