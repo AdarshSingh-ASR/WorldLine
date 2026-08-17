@@ -38,7 +38,7 @@ SELECT json_build_object(
   'regions', (SELECT json_agg(region) FROM [SHOW REGIONS FROM DATABASE worldline]),
   'vectorIndex', EXISTS (
     SELECT 1 FROM [SHOW INDEXES FROM maneuver_memories]
-    WHERE index_name = 'maneuver_memory_vector_idx'
+    WHERE index_name = 'maneuver_memory_recall_idx'
   ),
   'changefeeds', (
     SELECT count(*) FROM [SHOW CHANGEFEED JOBS]

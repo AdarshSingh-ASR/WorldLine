@@ -122,10 +122,34 @@ Three of the four eligible tool categories, each load-bearing at runtime or in t
 | **What the agent does with it** | Embeds the live scenario geometry to 1024 dimensions, then performs a prefix-filtered cosine KNN over verified past maneuvers to retrieve the top 3 analogous situations. That memory selects the separation maneuver the agent then attempts. |
 | **Enabled** | `SET CLUSTER SETTING feature.vector_index.enabled = true` — [`001_worldline_core.sql:1`](services/agent/migrations/001_worldline_core.sql#L1) |
 | **Column** | `embedding VECTOR(1024) NOT NULL` — [`001_worldline_core.sql:18`](services/agent/migrations/001_worldline_core.sql#L18) |
-| **Index** | `CREATE VECTOR INDEX maneuver_memory_vector_idx ON maneuver_memories (home_region, vehicle_class, embedding vector_cosine_ops) WITH (min_partition_size = 16, max_partition_size = 128)` — [`002_multiregion.sql:23-29`](services/agent/migrations/002_multiregion.sql#L23-L29) |
+| **Index** | `CREATE VECTOR INDEX maneuver_memory_recall_idx ON maneuver_memories (home_region, vehicle_class, outcome, embedding vector_cosine_ops) WITH (min_partition_size = 16, max_partition_size = 128)` — [`003_vector_index_outcome.sql`](services/agent/migrations/003_vector_index_outcome.sql) |
 | **Query** | `1 - (embedding <=> $3::VECTOR) AS similarity … ORDER BY embedding <=> $3::VECTOR LIMIT 3` — [`repository.mjs:52-73`](services/agent/src/repository.mjs#L52-L73) |
 
-The **prefix columns are the point**: recall is scoped to the agent's own region and vehicle class *inside the index*, so an approximate search can never surface a lesson from an incompatible airframe or jurisdiction.
+The **prefix columns are the point**: recall is scoped to the agent's own region, vehicle class and verified outcome *inside the index*, so an approximate search can never surface a lesson from an incompatible airframe, jurisdiction, or an episode nobody verified.
+
+Every equality predicate in the recall query must live in the index prefix. With
+`outcome` outside it, CockroachDB rejects the index outright (`SQLSTATE 42809`,
+"index cannot be used for this query") because an approximate top-k followed by a
+residual filter cannot guarantee k results — and recall silently degrades to a
+full table scan. That is what
+[`003_vector_index_outcome.sql`](services/agent/migrations/003_vector_index_outcome.sql)
+fixes.
+
+The seeded corpus is built to make this visible. The three highest-scoring
+memories against the live scenario are all deliberately unreachable:
+
+| | memory | cosine | excluded by |
+|---|---|---|---|
+| ✗ | `MEM-1204` | 0.9489 | vehicle class (`heavy-lift`) |
+| ✗ | `MEM-1150` | 0.9259 | home region (`eu-west-1`) |
+| ✗ | `MEM-1388` | 0.8305 | `outcome = 'rejected'` |
+| ✓ | `MEM-2041` | 0.8144 | recalled first |
+| ✓ | `MEM-1876` | 0.7744 | recalled second |
+| ✓ | `MEM-1509` | 0.7667 | recalled third |
+
+If the prefix columns and the outcome predicate were not doing real work,
+`MEM-1388` would win the search. It never appears. Reproduce the table with
+`npm run verify:recall`.
 
 Alongside it, `GIST` spatial indexes on route and airspace geometry ([`001:22-23,44-45`](services/agent/migrations/001_worldline_core.sql#L22-L23)) narrow collision candidates **exactly** — approximate vector search never makes a safety decision.
 
@@ -177,7 +201,7 @@ These are enforced in code, not just documented — see the retry loop at [`repo
 |---|---|---|
 | **AWS Lambda** | The typed decision boundary. One function serves the HTTP API (plan / commit / world / receipts / demo controls); a second serves WebSocket connect-disconnect-default routes. Zod-validated request contracts. | [`template.yaml:55,84`](services/agent/template.yaml) · [`src/index.mjs`](services/agent/src/index.mjs) |
 | **Amazon Bedrock** | Two narrow jobs behind a provider boundary: **Titan Text Embeddings v2** produces the normalized 1024-d scenario embedding; **Nova Micro** ranks the closed maneuver candidate set at `temperature: 0`, `maxTokens: 120`. Output is Zod-parsed against an enum of existing maneuver IDs — a hallucinated maneuver is structurally rejectable. Both calls complete **outside** the transaction. | [`providers.mjs:22-97`](services/agent/src/providers.mjs) |
-| **Amazon ECS (Fargate)** | Long-running changefeed consumer — cannot be a Lambda, because a sinkless changefeed is a persistent SQL cursor. Dedupes at-least-once delivery and resumes from the highest recorded MVCC timestamp. | [`changefeed/template.yaml:18,96`](services/changefeed/template.yaml) |
+| **Amazon ECS (Fargate)** | Long-running changefeed consumer — cannot be a Lambda, because a sinkless changefeed is a persistent SQL cursor. Dedupes at-least-once delivery, resumes from the highest recorded MVCC timestamp, backs off and resets on reconnect, drains cleanly on `SIGTERM`, and logs a liveness heartbeat carrying the last resolved timestamp so a stalled feed is distinguishable from a quiet one. | [`changefeed/template.yaml:18,96`](services/changefeed/template.yaml) |
 | **Amazon S3** | Versioned, `AES256`-encrypted commit receipts keyed `receipts/{id}.json`, with the SHA-256 content hash stored both in object metadata and in the `commit_receipts` row for tamper evidence. | [`evidence.mjs`](services/agent/src/evidence.mjs) · [`template.yaml:147`](services/agent/template.yaml) |
 | **Amazon API Gateway** | HTTP API for agent requests; WebSocket API pushes CDC-confirmed state to the control room. | [`template.yaml:47,77`](services/agent/template.yaml) |
 | **AWS Secrets Manager** | Supplies the four separate database identities. No credential is ever stored in source. | [`scripts/inspect-live-database.mjs`](services/agent/scripts/inspect-live-database.mjs) |
@@ -343,6 +367,10 @@ cockroach sql --url $WORLDLINE_DATABASE_URL -e "SHOW CHANGEFEED JOBS;"
 # Two agents genuinely contend for one corridor and one gets 40001
 cd services/agent && node --env-file=.env scripts/run-live-contention-test.mjs
 
+# Recall is filtered before it is approximate, and the vector index is in the
+# query path. Exits non-zero if the planner falls back to a full scan.
+npm run verify:recall
+
 # Regions, localities, vector index, and CDC in one report
 npm run verify:database
 
@@ -428,7 +456,8 @@ infra/bootstrap.yaml          Bootstrap infrastructure
 - Seeded memories are synthetic-but-structured; a production deployment would ingest verified incident reports.
 - The demo scenario is a fixed two-agent contention case, chosen because it is legible in 100 seconds — the transaction and recall paths are not demo-specific.
 - Bedrock model access is granted per AWS account and region. Where Titan and Nova are authorized the agent uses them; elsewhere the labeled deterministic fallback keeps the commitment plane fully functional.
-- Only one verified memory is currently seeded, so recall returns `n=1` and reports 100% cosine similarity. That figure is real, but a richer seed corpus would demonstrate ranking across competing episodes more convincingly.
+- The seeded corpus is seven synthetic-but-structured episodes. A production deployment would ingest verified incident reports; the recall, ranking and filtering paths are identical either way.
+- The recall query only uses the distributed vector index once `003_vector_index_outcome.sql` is applied. Until then the planner falls back to a full scan — run `npm run verify:recall` to check which is happening.
 - The admission transaction takes roughly 2.4s when the agent runs outside the region its rows are homed in. Co-locating the agent with the primary region reduces this substantially; see the note on row homing in [`repository.mjs`](services/agent/src/repository.mjs).
 
 ## License

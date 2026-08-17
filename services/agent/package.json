@@ -13,7 +13,8 @@
     "provision:roles": "node --env-file=.env scripts/provision-roles.mjs",
     "seed": "node --env-file=.env scripts/seed.mjs",
     "smoke": "node --env-file=.env scripts/smoke.mjs",
-    "verify:database": "node --env-file=.env scripts/verify-database.mjs"
+    "verify:database": "node --env-file=.env scripts/verify-database.mjs",
+    "verify:recall": "node --env-file=.env scripts/verify-recall.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.850.0",

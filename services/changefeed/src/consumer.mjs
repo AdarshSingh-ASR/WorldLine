@@ -71,15 +71,39 @@ async function consumeOnce(controlPool) {
   try {
     await feedClient.connect();
 
+    /**
+     * Resume cursor.
+     *
+     * mvcc_timestamp is a STRING column, so max() compares lexically —
+     * "9…" sorts above "10…" — which can hand the changefeed a cursor ahead of
+     * what was actually recorded and silently skip events. The numeric cast
+     * fixes the ordering.
+     *
+     * The candidate set is bounded by observed_at, which is indexed, because an
+     * unbounded sort over an append-only confirmation table is a full scan that
+     * grows forever. A max over a subset can only be lower than the true
+     * maximum, never higher: resuming early replays events that the primary key
+     * then dedupes, whereas resuming late would lose them.
+     */
     const cursor = await controlPool
       .query(
         `
-          SELECT max(mvcc_timestamp) AS cursor
-            FROM cdc_confirmations
-           WHERE mvcc_timestamp ~ '^[0-9]+\\.[0-9]+$'
+          SELECT max(mvcc_timestamp::DECIMAL)::STRING AS cursor
+            FROM (
+              SELECT mvcc_timestamp
+                FROM cdc_confirmations
+               WHERE mvcc_timestamp ~ '^[0-9]+\\.[0-9]+$'
+               ORDER BY observed_at DESC
+               LIMIT 500
+            )
         `,
       )
       .then((result) => result.rows[0]?.cursor);
+    console.log(
+      cursor
+        ? `changefeed resuming from cursor ${cursor}`
+        : "changefeed starting without a cursor (no prior confirmations)",
+    );
     const cursorOption = cursor ? `cursor='${cursor}',` : "";
     const sql = `
       CREATE CHANGEFEED FOR
@@ -93,6 +117,21 @@ async function consumeOnce(controlPool) {
         min_checkpoint_frequency='1s',
         envelope='wrapped'
     `;
+    // Liveness. A changefeed that stops delivering looks identical to a quiet
+    // one from the outside, so the counters are reported on an interval: a
+    // heartbeat with no confirmations while routes are committing is the signal
+    // that something is wrong.
+    let confirmations = 0;
+    let duplicates = 0;
+    let failures = 0;
+    let lastResolved = null;
+    const heartbeat = setInterval(() => {
+      console.log(
+        `changefeed alive: ${confirmations} recorded, ${duplicates} duplicate, ${failures} failed, last resolved ${lastResolved ?? "none"}`,
+      );
+    }, 30_000);
+    heartbeat.unref?.();
+
     await new Promise((resolve, reject) => {
       const query = feedClient.query(new pg.Query(sql));
       let processing = Promise.resolve();
@@ -101,6 +140,7 @@ async function consumeOnce(controlPool) {
           .then(async () => {
             const event = parseChangefeedRow(row);
             if (event.type === "resolved") {
+              lastResolved = event.resolved;
               await broadcast(controlPool, event);
               return;
             }
@@ -109,7 +149,10 @@ async function consumeOnce(controlPool) {
                 INSERT INTO cdc_confirmations (
                   source_table, source_key, mvcc_timestamp, event_op, payload,
                   crdb_region
-                ) VALUES ($1, $2, $3, $4, $5, 'aws-us-east-1')
+                ) VALUES (
+                  $1, $2, $3, $4, $5,
+                  default_to_database_primary_region(gateway_region())::crdb_internal_region
+                )
                 ON CONFLICT DO NOTHING
                 RETURNING source_key
               `,
@@ -134,10 +177,16 @@ async function consumeOnce(controlPool) {
                 [event.sourceKey],
               );
             }
-            if (inserted.rowCount > 0) await broadcast(controlPool, event);
+            if (inserted.rowCount > 0) {
+              confirmations += 1;
+              await broadcast(controlPool, event);
+            } else {
+              duplicates += 1;
+            }
           })
           .catch((error) => {
-            console.error("changefeed event failed", error);
+            failures += 1;
+            console.error("changefeed event failed", error.message);
           });
       });
       query.once("error", (error) => {
@@ -146,6 +195,11 @@ async function consumeOnce(controlPool) {
       query.once("end", () => {
         processing.finally(resolve);
       });
+    }).finally(() => {
+      clearInterval(heartbeat);
+      console.log(
+        `changefeed run ended: ${confirmations} recorded, ${duplicates} duplicate, ${failures} failed`,
+      );
     });
   } finally {
     await feedClient.end().catch(() => {});
@@ -160,17 +214,62 @@ async function start() {
     idleTimeoutMillis: 20_000,
     connectionTimeoutMillis: 8_000,
   });
-  let delayMs = 500;
-  while (true) {
+
+  // An idle pool client whose TCP connection dies emits an error on the pool.
+  // Unhandled, that terminates the process; the supervision loop below is the
+  // thing that is supposed to handle failure.
+  controlPool.on("error", (error) => {
+    console.error("changefeed control pool error", error.message);
+  });
+
+  let shuttingDown = false;
+  const shutdown = async (signal) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`changefeed received ${signal}, shutting down`);
+    // Ends the feed connection too, which cancels the changefeed server-side
+    // instead of leaving it to time out.
+    await controlPool.end().catch(() => {});
+    process.exit(0);
+  };
+  for (const signal of ["SIGTERM", "SIGINT"]) {
+    process.on(signal, () => void shutdown(signal));
+  }
+
+  const MIN_DELAY_MS = 500;
+  const MAX_DELAY_MS = 15_000;
+  let delayMs = MIN_DELAY_MS;
+  let consecutiveFailures = 0;
+
+  while (!shuttingDown) {
+    const startedAt = Date.now();
     try {
       await consumeOnce(controlPool);
       throw new Error("changefeed ended");
     } catch (error) {
-      console.error("changefeed reconnecting", error);
+      if (shuttingDown) break;
+      const ranFor = Date.now() - startedAt;
+      // A feed that stayed up is a success even though it ended. Without this
+      // reset the backoff ratchets to its ceiling after the first blip and
+      // stays there for the life of the process, so a later reconnect waits
+      // 15s for no reason.
+      if (ranFor > 60_000) {
+        consecutiveFailures = 0;
+        delayMs = MIN_DELAY_MS;
+      } else {
+        consecutiveFailures += 1;
+      }
+      console.error(
+        `changefeed reconnecting in ${delayMs}ms after ${ranFor}ms (consecutive failures: ${consecutiveFailures}): ${error.message}`,
+      );
       await new Promise((resolve) => setTimeout(resolve, delayMs));
-      delayMs = Math.min(delayMs * 2, 15_000);
+      delayMs = Math.min(delayMs * 2, MAX_DELAY_MS);
     }
   }
 }
+
+process.on("unhandledRejection", (reason) => {
+  console.error("changefeed unhandled rejection", reason);
+});
 
 await start();

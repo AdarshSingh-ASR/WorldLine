@@ -36,11 +36,15 @@ async function applyFile(client, filename) {
       }
     }
 
-    if (/^CREATE VECTOR INDEX IF NOT EXISTS\s+maneuver_memory_vector_idx/i.test(statement)) {
+    const vectorIndexMatch = statement.match(
+      /^CREATE VECTOR INDEX IF NOT EXISTS\s+([a-z_]+)/i,
+    );
+    if (vectorIndexMatch) {
       const { rows } = await client.query(
         `SELECT count(*)::INT AS count
            FROM [SHOW INDEXES FROM maneuver_memories]
-          WHERE index_name = 'maneuver_memory_vector_idx'`,
+          WHERE index_name = $1`,
+        [vectorIndexMatch[1]],
       );
       if (rows[0]?.count > 0) {
         console.log(`[${filename} ${index + 1}/${migrationStatements.length}] already applied`);
@@ -77,6 +81,9 @@ try {
   if (config.applyMultiRegion) {
     await applyFile(client, "002_multiregion.sql");
   }
+  // The recall index is not multi-region specific: it is what puts the
+  // distributed vector index into the runtime query path at all.
+  await applyFile(client, "003_vector_index_outcome.sql");
   console.log("WORLDLINE migrations applied");
 } finally {
   await client.end();
