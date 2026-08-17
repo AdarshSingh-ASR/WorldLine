@@ -124,6 +124,7 @@ Three of the four eligible tool categories, each load-bearing at runtime or in t
 | **Column** | `embedding VECTOR(1024) NOT NULL` — [`001_worldline_core.sql:18`](services/agent/migrations/001_worldline_core.sql#L18) |
 | **Index** | `CREATE VECTOR INDEX maneuver_memory_recall_idx ON maneuver_memories (home_region, vehicle_class, outcome, embedding vector_cosine_ops) WITH (min_partition_size = 16, max_partition_size = 128)` — [`003_vector_index_outcome.sql`](services/agent/migrations/003_vector_index_outcome.sql) |
 | **Query** | `1 - (embedding <=> $3::VECTOR) AS similarity … ORDER BY embedding <=> $3::VECTOR LIMIT 3` — [`repository.mjs:52-73`](services/agent/src/repository.mjs#L52-L73) |
+| **Verified plan** | `• vector search  table: maneuver_memories@maneuver_memory_recall_idx  target count: 3  prefix spans: [/'aws-ap-south-1'/'ap-south-1'/'medium-cargo'/'verified-safe' …]` — reproduce with `npm run verify:recall` |
 
 The **prefix columns are the point**: recall is scoped to the agent's own region, vehicle class and verified outcome *inside the index*, so an approximate search can never surface a lesson from an incompatible airframe, jurisdiction, or an episode nobody verified.
 
@@ -457,7 +458,7 @@ infra/bootstrap.yaml          Bootstrap infrastructure
 - The demo scenario is a fixed two-agent contention case, chosen because it is legible in 100 seconds — the transaction and recall paths are not demo-specific.
 - Bedrock model access is granted per AWS account and region. Where Titan and Nova are authorized the agent uses them; elsewhere the labeled deterministic fallback keeps the commitment plane fully functional.
 - The seeded corpus is seven synthetic-but-structured episodes. A production deployment would ingest verified incident reports; the recall, ranking and filtering paths are identical either way.
-- The recall query only uses the distributed vector index once `003_vector_index_outcome.sql` is applied. Until then the planner falls back to a full scan — run `npm run verify:recall` to check which is happening.
+- The recall query only uses the distributed vector index once `003_vector_index_outcome.sql` is applied; before that the planner falls back to a full scan. It is applied on the deployed cluster and `npm run verify:recall` exits non-zero if a deployment ever regresses.
 - The admission transaction takes roughly 2.4s when the agent runs outside the region its rows are homed in. Co-locating the agent with the primary region reduces this substantially; see the note on row homing in [`repository.mjs`](services/agent/src/repository.mjs).
 
 ## License
