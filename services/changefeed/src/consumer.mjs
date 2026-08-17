@@ -11,14 +11,29 @@ const databaseUrl = process.env.WORLDLINE_DATABASE_URL;
 const socketEndpoint = process.env.WORLDLINE_WEBSOCKET_ENDPOINT;
 const awsRegion = process.env.WORLDLINE_AWS_REGION ?? "us-east-1";
 if (!databaseUrl) throw new Error("WORLDLINE_DATABASE_URL is required");
-if (!socketEndpoint) throw new Error("WORLDLINE_WEBSOCKET_ENDPOINT is required");
 
-const management = new ApiGatewayManagementApiClient({
-  region: awsRegion,
-  endpoint: socketEndpoint.replace(/^wss:/, "https:"),
-});
+/**
+ * Recording a confirmation and pushing it to browsers are separate concerns.
+ * The durable projection into cdc_confirmations is what makes a committed
+ * future authoritative; the WebSocket fan-out is an optional transport. Keeping
+ * the endpoint optional lets the projection run anywhere — including local
+ * development with no AWS resources — instead of refusing to start.
+ */
+const management = socketEndpoint
+  ? new ApiGatewayManagementApiClient({
+      region: awsRegion,
+      endpoint: socketEndpoint.replace(/^wss:/, "https:"),
+    })
+  : null;
+
+if (!management) {
+  console.warn(
+    "WORLDLINE_WEBSOCKET_ENDPOINT is not set: recording CDC confirmations without WebSocket fan-out",
+  );
+}
 
 async function broadcast(db, event) {
+  if (!management) return;
   await db.query("DELETE FROM stream_clients WHERE expires_at <= now()");
   const clients = await db.query(
     "SELECT connection_id FROM stream_clients WHERE expires_at > now()",

@@ -180,7 +180,7 @@ export type CdcEvent = {
 export type EventReport = {
   events: CdcEvent[];
   cursor: string | null;
-  confirmationCount: number;
+  latestObservedAt: string | null;
   observedAt: string;
 };
 
@@ -380,6 +380,43 @@ export function relativeAge(iso: string | null | undefined): string | null {
   }
   const years = seconds / 31557600;
   return `${years.toFixed(1)} years ago`;
+}
+
+/**
+ * Presents a memory's scenario JSONB without assuming its keys. Long prose is
+ * separated from short facts, camelCase keys are humanised, and arrays are
+ * joined — so a memory seeded with different fields still reads correctly.
+ */
+export function describeScenario(scenario: Record<string, unknown> | null): {
+  prose: string | null;
+  facts: Array<{ label: string; value: string }>;
+} {
+  if (!scenario) return { prose: null, facts: [] };
+  let prose: string | null = null;
+  const facts: Array<{ label: string; value: string }> = [];
+
+  for (const [key, raw] of Object.entries(scenario)) {
+    const value = Array.isArray(raw)
+      ? raw.join(" / ")
+      : raw === null || raw === undefined
+        ? ""
+        : String(raw);
+    if (!value) continue;
+    // Anything sentence-length is prose, not a fact chip.
+    if (value.length > 48) {
+      if (!prose) prose = value;
+      continue;
+    }
+    facts.push({
+      label: key
+        .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+        .replace(/[_-]+/g, " ")
+        .toLowerCase(),
+      value,
+    });
+  }
+
+  return { prose, facts };
 }
 
 export function shortHlc(hlc: string | null | undefined): string {

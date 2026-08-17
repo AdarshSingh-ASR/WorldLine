@@ -13,22 +13,38 @@ export function createDatabase(databaseUrl) {
   });
 }
 
+const diagnostics = process.env.WORLDLINE_TXN_DIAGNOSTICS === "true";
+
 export async function withSerializable(pool, operation, options = {}) {
   const maxAttempts = options.maxAttempts ?? 5;
   const priority = options.priority ?? "NORMAL";
+  const label = options.label ?? "txn";
   const client = await pool.connect();
   let attempt = 0;
   try {
-    await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
-    await client.query(`SET TRANSACTION PRIORITY ${priority}`);
-    await client.query("SAVEPOINT cockroach_restart");
+    // One round trip instead of three. Every saved round trip shortens the
+    // window in which a serializable transaction can be invalidated, which
+    // matters when the gateway region is not the region the rows live in.
+    await client.query(
+      `BEGIN ISOLATION LEVEL SERIALIZABLE; SET TRANSACTION PRIORITY ${priority}; SAVEPOINT cockroach_restart`,
+    );
     while (attempt < maxAttempts) {
+      const startedAt = Date.now();
       try {
       const value = await operation(client, attempt);
-        await client.query("RELEASE SAVEPOINT cockroach_restart");
-      await client.query("COMMIT");
+        await client.query("RELEASE SAVEPOINT cockroach_restart; COMMIT");
+        if (diagnostics) {
+          console.error(
+            `[txn ${label}] committed attempt=${attempt} in ${Date.now() - startedAt}ms`,
+          );
+        }
       return { value, retryCount: attempt };
       } catch (error) {
+        if (diagnostics) {
+          console.error(
+            `[txn ${label}] attempt=${attempt} failed after ${Date.now() - startedAt}ms code=${error?.code} ${String(error?.message).slice(0, 160)}`,
+          );
+        }
         if (error?.code !== "40001" || attempt + 1 >= maxAttempts) {
           await client.query("ROLLBACK").catch(() => {});
           throw error;

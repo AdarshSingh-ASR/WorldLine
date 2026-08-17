@@ -634,6 +634,13 @@ button.ghost {
   margin-bottom: 8px;
 }
 
+.memory-prose {
+  margin: 0 0 10px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+
 .memory-facts {
   display: grid;
   grid-template-columns: 1fr 1fr;

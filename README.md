@@ -183,11 +183,30 @@ These are enforced in code, not just documented — see the retry loop at [`repo
 | **AWS Secrets Manager** | Supplies the four separate database identities. No credential is ever stored in source. | [`scripts/inspect-live-database.mjs`](services/agent/scripts/inspect-live-database.mjs) |
 | **AWS SAM / CloudFormation** | Both stacks are infrastructure-as-code; CodeBuild `buildspec.yml` publishes the CDC image. | [`template.yaml`](services/agent/template.yaml) · [`buildspec.yml`](services/changefeed/buildspec.yml) |
 
-### The provider boundary, honestly
+### The provider boundary
 
-`embedScenario` and `rankManeuvers` are wired to Bedrock and **fall back to a deterministic, clearly-labeled 1024-d feature-hash embedding and a rule-based ranker** when the Bedrock call fails for any reason — including `NOT_AUTHORIZED` model access ([`providers.mjs:42-46`](services/agent/src/providers.mjs#L42-L46)). Every response reports which provider served it (`"amazon-bedrock"` or `"deterministic"`), so the UI and receipts never overstate what happened.
+**Bedrock is live.** A verified run against the three-region cluster returns
+`providers: { embedding: "amazon-bedrock", ranking: "amazon-bedrock" }`, and
+Nova Micro's selection rationale is persisted into the commit receipt:
 
-This is not a workaround bolted on for the demo — it is the degradation path a safety-adjacent system needs. **A model outage must not be able to stop the commitment plane, and it must never silently change the decision contract.** The safety rules, the transaction shape, and the receipt schema are byte-identical on both paths.
+> "The scenario closely matches the verified episodic memory 'Converging approach
+> under crosswind'… The maneuver 'Vertical separation / +38 m' has been proven
+> safe with a confidence of 0.99, making it the most appropriate choice."
+
+Titan Text Embeddings v2 produces the 1024-d scenario vector that CockroachDB's
+vector index searches; Nova Micro ranks the closed candidate set at
+`temperature: 0`. The model's answer is Zod-parsed against an enum of existing
+maneuver IDs, so a hallucinated maneuver is structurally rejectable, and the
+deterministic safety rules still hold veto power over whatever it picks.
+
+Both calls also have a **deterministic fallback** — a labeled 1024-d feature-hash
+embedding and a rule-based ranker — used if a Bedrock call fails for any reason
+([`providers.mjs:42-46`](services/agent/src/providers.mjs#L42-L46)). Every
+response reports which provider actually served it, so the interface and the
+receipts can never overstate what happened. A model outage must not be able to
+stop the commitment plane, and it must never silently change the decision
+contract: the safety rules, transaction shape and receipt schema are identical
+on both paths.
 
 ---
 
@@ -408,7 +427,9 @@ infra/bootstrap.yaml          Bootstrap infrastructure
 - Strategic layer only, seconds ahead of motion. Not a flight controller. Onboard avoidance stays authoritative.
 - Seeded memories are synthetic-but-structured; a production deployment would ingest verified incident reports.
 - The demo scenario is a fixed two-agent contention case, chosen because it is legible in 100 seconds — the transaction and recall paths are not demo-specific.
-- Bedrock model access is per-account; the deterministic fallback keeps the system fully functional and clearly labeled when it is unavailable.
+- Bedrock model access is granted per AWS account and region. Where Titan and Nova are authorized the agent uses them; elsewhere the labeled deterministic fallback keeps the commitment plane fully functional.
+- Only one verified memory is currently seeded, so recall returns `n=1` and reports 100% cosine similarity. That figure is real, but a richer seed corpus would demonstrate ranking across competing episodes more convincingly.
+- The admission transaction takes roughly 2.4s when the agent runs outside the region its rows are homed in. Co-locating the agent with the primary region reduces this substantially; see the note on row homing in [`repository.mjs`](services/agent/src/repository.mjs).
 
 ## License
 

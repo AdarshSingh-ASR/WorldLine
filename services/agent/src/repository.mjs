@@ -17,6 +17,17 @@ const agents = [
   { id: "ORBITAL-3", homeRegion: "ap-south-1", role: "recalled" },
 ];
 
+/**
+ * Row homing for REGIONAL BY ROW tables. Rows are placed in the region of the
+ * gateway that wrote them, falling back to the database primary region when the
+ * gateway is not a database region. Pinning every row to one hardcoded region
+ * made every statement a cross-region round trip for an agent running anywhere
+ * else, stretching the admission transaction past the point where its commit
+ * timestamp could still be refreshed.
+ */
+const LOCAL_REGION_SQL =
+  "default_to_database_primary_region(gateway_region())::crdb_internal_region";
+
 function homeRegionFor(agentId) {
   return agents.find((agent) => agent.id === agentId)?.homeRegion ?? "us-east-1";
 }
@@ -204,8 +215,8 @@ export class WorldlineRepository {
           id, scenario_id, agent_id, home_region, vehicle_class,
           status, idempotency_key, input, crdb_region
         ) VALUES
-          ($1, $3, $8, $9, 'medium-cargo', 'planned', $4, $6, 'aws-us-east-1'),
-          ($2, $3, $10, $11, 'medium-cargo', 'planned', $5, $7, 'aws-us-east-1')
+          ($1, $3, $8, $9, 'medium-cargo', 'planned', $4, $6, ${LOCAL_REGION_SQL}),
+          ($2, $3, $10, $11, 'medium-cargo', 'planned', $5, $7, ${LOCAL_REGION_SQL})
         ON CONFLICT (idempotency_key) DO NOTHING
       `,
       [
@@ -585,6 +596,19 @@ export class WorldlineRepository {
         async (client, attempt) => {
           const useAlternate = alternate;
           const corridorId = useAlternate ? "X-17-ALT" : "X-17";
+          // Coordinate BEFORE touching corridor_capacity.
+          //
+          // Reading capacity first leaves the waiting agent parked on
+          // `winnerCommitted` while holding an open serializable transaction
+          // with a read timestamp on the contested row. The winner's UPDATE
+          // then cannot refresh that read and takes RETRY_SERIALIZABLE, but the
+          // waiter only unparks once the winner commits — so the winner burns
+          // its whole retry budget and the race deadlocks. Low-latency
+          // single-region clusters usually hid this by letting the winner reach
+          // its UPDATE first; a multi-region cluster loses that race reliably.
+          if (coordinate && attempt === 0) await barrier.wait();
+          if (coordinate && recalled && attempt === 0) await winnerCommitted;
+
           const capacity = await client.query(
             `
               SELECT capacity, used, revision
@@ -594,8 +618,6 @@ export class WorldlineRepository {
             [scenario.id, corridorId],
           );
           if (capacity.rowCount !== 1) throw new Error("Corridor capacity missing");
-          if (coordinate && attempt === 0) await barrier.wait();
-          if (coordinate && recalled && attempt === 0) await winnerCommitted;
 
           const claimed = await client.query(
             `
@@ -628,16 +650,19 @@ export class WorldlineRepository {
           const decisionId = randomUUID();
           const receiptId = randomUUID();
           const commandId = randomUUID();
-          const decisionHlc = await client.query(
-            "SELECT cluster_logical_timestamp()::STRING AS hlc",
-          );
-          await client.query(
+          // The HLC is produced by the insert itself rather than a preceding
+          // SELECT, removing a round trip from the critical section.
+          const decisionRow = await client.query(
             `
               INSERT INTO route_decisions (
                 id, scenario_id, route_request_id, agent_id, home_region,
                 corridor_id, state, selected_memory_id, maneuver_id,
                 maneuver, safety_result, retry_count, decision_hlc, crdb_region
-              ) VALUES ($1, $2, $3, $4, $5, $6, 'committed', $7, $8, $9, $10, $11, $12, $13)
+              ) VALUES (
+                $1, $2, $3, $4, $5, $6, 'committed', $7, $8, $9, $10, $11,
+                cluster_logical_timestamp()::STRING, ${LOCAL_REGION_SQL}
+              )
+              RETURNING decision_hlc AS hlc
             `,
             [
               decisionId,
@@ -651,39 +676,33 @@ export class WorldlineRepository {
               useAlternate ? maneuver : { label: "Original worldline" },
               safety,
               baseRetryCount + attempt,
-              decisionHlc.rows[0].hlc,
-              "aws-us-east-1",
             ],
           );
+          const decisionHlcValue = decisionRow.rows[0].hlc;
 
           const cells = useAlternate
             ? ["X17-A-01", "X17-A-02", "X17-A-03", "X17-A-04"]
             : agentId === "KESTREL-7"
               ? ["X17-01", "X17-02", "X17-03", "X17-04"]
               : ["X17-03", "X17-04", "X17-05", "X17-06"];
-          for (let index = 0; index < cells.length; index += 1) {
-            await client.query(
-              `
-                INSERT INTO occupancy_claims (
-                  id, scenario_id, route_decision_id, cell_id, slot_start,
-                  slot_end, exclusion_slot, home_region, crdb_region
-                ) VALUES (
-                  gen_random_uuid(), $1, $2, $3,
-                  now() + ($4::INT * interval '5 seconds'),
-                  now() + (($4::INT + 1) * interval '5 seconds'),
-                  0, $5, $6
-                )
-              `,
-              [
-                scenario.id,
-                decisionId,
-                cells[index],
-                index,
-                "us-east-1",
-                "aws-us-east-1",
-              ],
-            );
-          }
+          // One statement for every exclusion claim. Four separate inserts cost
+          // four cross-region round trips inside a transaction that must stay
+          // short enough to survive a commit-timestamp push.
+          await client.query(
+            `
+              INSERT INTO occupancy_claims (
+                id, scenario_id, route_decision_id, cell_id, slot_start,
+                slot_end, exclusion_slot, home_region, crdb_region
+              )
+              SELECT
+                gen_random_uuid(), $1, $2, cell.id,
+                now() + (cell.slot * interval '5 seconds'),
+                now() + ((cell.slot + 1) * interval '5 seconds'),
+                0, $3, ${LOCAL_REGION_SQL}
+              FROM unnest($4::STRING[]) WITH ORDINALITY AS cell(id, slot)
+            `,
+            [scenario.id, decisionId, homeRegionFor(agentId), cells],
+          );
 
           if (useAlternate && memory) {
             await client.query(
@@ -691,7 +710,10 @@ export class WorldlineRepository {
                 INSERT INTO memory_reads (
                   id, memory_id, route_decision_id, rank, similarity,
                   causal_weight, exact_match, created_at, crdb_region
-                ) VALUES (gen_random_uuid(), $1, $2, 1, $3, 1, true, now(), 'aws-us-east-1')
+                ) VALUES (
+                  gen_random_uuid(), $1, $2, 1, $3, 1, true, now(),
+                  ${LOCAL_REGION_SQL}
+                )
               `,
               [memory.id, decisionId, memory.similarity],
             );
@@ -701,13 +723,12 @@ export class WorldlineRepository {
             `
               INSERT INTO command_outbox (
                 id, route_decision_id, command_type, payload, state, crdb_region
-              ) VALUES ($1, $2, 'movement-token', $3, 'pending', $4)
+              ) VALUES ($1, $2, 'movement-token', $3, 'pending', ${LOCAL_REGION_SQL})
             `,
             [
               commandId,
               decisionId,
               { agentId, corridorId, routeId },
-              "aws-us-east-1",
             ],
           );
           const receiptEvidence = {
@@ -728,17 +749,16 @@ export class WorldlineRepository {
               INSERT INTO commit_receipts (
                 id, scenario_id, route_decision_id, memory_id, decision_hlc,
                 evidence, content_hash, cdc_confirmed, crdb_region
-              ) VALUES ($1, $2, $3, $4, $5, $6, $7, false, $8)
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7, false, ${LOCAL_REGION_SQL})
             `,
             [
               receiptId,
               scenario.id,
               decisionId,
               useAlternate ? memory?.id ?? null : null,
-              decisionHlc.rows[0].hlc,
+              decisionHlcValue,
               receiptEvidence,
               contentHash,
-              "aws-us-east-1",
             ],
           );
           await client.query(
@@ -750,7 +770,7 @@ export class WorldlineRepository {
             decisionId,
             receiptId,
             corridorId,
-            decisionHlc: decisionHlc.rows[0].hlc,
+            decisionHlc: decisionHlcValue,
             useAlternate,
             safety,
             // Surfaced so the control room can label every route with the
@@ -766,7 +786,11 @@ export class WorldlineRepository {
             attemptRetryCount: baseRetryCount + attempt,
           };
         },
-        { priority, maxAttempts: coordinate && recalled ? 1 : 5 },
+        {
+          priority,
+          maxAttempts: coordinate && recalled ? 1 : 5,
+          label: `${agentId}${alternate ? "-alt" : ""}`,
+        },
       );
 
     const routeAPromise = commit({
@@ -1167,16 +1191,20 @@ export class WorldlineRepository {
            LIMIT 50
         `);
 
-    const totals = await this.pool.query(`
-      SELECT count(*)::INT AS confirmation_count,
-             max(observed_at) AS latest_observed_at
+    // Deliberately no count(*). The confirmation table is append-only and
+    // grows without bound: an exact count is a full scan that measured at
+    // 5.4s against a million rows, which a polling client would queue up on.
+    // max(observed_at) is served by cdc_by_observed_time in ~350ms, and the
+    // interface counts the events it actually receives.
+    const latest = await this.pool.query(`
+      SELECT max(observed_at) AS latest_observed_at
         FROM cdc_confirmations
     `);
 
     return {
       events: cdc.rows.reverse(),
-      cursor: totals.rows[0]?.latest_observed_at ?? null,
-      confirmationCount: totals.rows[0]?.confirmation_count ?? 0,
+      cursor: latest.rows[0]?.latest_observed_at ?? null,
+      latestObservedAt: latest.rows[0]?.latest_observed_at ?? null,
       observedAt: new Date().toISOString(),
     };
   }

@@ -15,6 +15,7 @@ import {
   AgentUnavailableError,
   agent,
   buildTransactionLog,
+  describeScenario,
   regionKey,
   regionLabel,
   regionSlot,
@@ -148,8 +149,8 @@ export default function ControlRoom() {
       try {
         const report = await agent.events(cursorRef.current, controller.signal);
         if (stopped) return;
+        const firstPoll = cursorRef.current === null;
         cursorRef.current = report.cursor ?? cursorRef.current;
-        setCdcCount(report.confirmationCount);
         setLastFeedAt(report.observedAt);
 
         const fresh = report.events.filter((event) => {
@@ -158,6 +159,15 @@ export default function ControlRoom() {
           seenEventsRef.current.add(key);
           return true;
         });
+
+        // The first poll returns the existing tail of an append-only table, so
+        // it seeds the cursor without being reported as live activity.
+        if (firstPoll) {
+          setFeedState("idle");
+          return;
+        }
+
+        setCdcCount((previous) => (previous ?? 0) + fresh.length);
 
         // "live" means the database genuinely produced new CDC rows. A quiet
         // poll leaves the previous verdict alone rather than inventing motion.
@@ -225,7 +235,11 @@ export default function ControlRoom() {
       }
       setResult(value);
       appendLog(buildTransactionLog(value));
-      await loadRegions();
+      // Refresh topology in the background. Reading cluster regions is a
+      // multi-second call on a three-region cluster, and blocking on it here
+      // would leave the control reading "Committing…" after the futures are
+      // already committed.
+      void loadRegions();
     } catch (error) {
       const failure = errorOf(error);
       setActionError(failure.detail ?? failure.message);
@@ -286,7 +300,9 @@ export default function ControlRoom() {
             state: event.state === "disconnected" ? "retry" : "ok",
           },
         ]);
-        await loadRegions();
+        // The broker event is already committed; reflect the new topology
+        // without holding the control in a pending state while it loads.
+        void loadRegions();
       } catch (error) {
         setActionError(errorOf(error).message);
       } finally {
@@ -385,7 +401,7 @@ export default function ControlRoom() {
           </span>
           <span className="divider" aria-hidden="true" />
           <span className="mono dim">
-            CDC {cdcCount === null ? "—" : cdcCount} EVENTS
+            CDC +{cdcCount ?? 0} OBSERVED
           </span>
           {lastFeedAt ? (
             <span className="mono dim">
@@ -638,18 +654,26 @@ export default function ControlRoom() {
                     </span>
                   </div>
                   <h3>{topMemory?.title}</h3>
-                  {topMemory?.scenario ? (
-                    <dl className="memory-facts mono">
-                      {Object.entries(topMemory.scenario)
-                        .slice(0, 6)
-                        .map(([label, value]) => (
-                          <div key={label}>
-                            <dt>{label}</dt>
-                            <dd>{String(value)}</dd>
-                          </div>
-                        ))}
-                    </dl>
-                  ) : null}
+                  {(() => {
+                    const { prose, facts } = describeScenario(
+                      topMemory?.scenario ?? null,
+                    );
+                    return (
+                      <>
+                        {prose ? <p className="memory-prose">{prose}</p> : null}
+                        {facts.length > 0 ? (
+                          <dl className="memory-facts mono">
+                            {facts.map((fact) => (
+                              <div key={fact.label}>
+                                <dt>{fact.label}</dt>
+                                <dd title={fact.value}>{fact.value}</dd>
+                              </div>
+                            ))}
+                          </dl>
+                        ) : null}
+                      </>
+                    );
+                  })()}
                   <footer>
                     <span className="mono">
                       outcome: {topMemory?.outcome}
