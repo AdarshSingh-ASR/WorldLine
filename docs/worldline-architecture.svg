@@ -1,46 +1,38 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080" role="img" aria-labelledby="title desc">
-  <title id="title">WORLDLINE production architecture</title>
-  <desc id="desc">A WORLDLINE control room calls an AWS Lambda agent. The agent uses Bedrock and CockroachDB. CockroachDB streams changefeed events through ECS and API Gateway WebSocket back to the control room, while receipts are archived to S3.</desc>
+  <title id="title">WORLDLINE architecture</title>
+  <desc id="desc">WORLDLINE control room calls a Lambda route agent, which uses Bedrock, CockroachDB vector memory and serializable transactions, and S3 receipts. CockroachDB changefeeds flow through ECS back to the control room.</desc>
   <defs>
-    <marker id="arrow" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="10" markerHeight="10" orient="auto-start-reverse"><path d="M1 1L11 6L1 11Z" fill="#7fa8bd"/></marker>
-    <marker id="arrow-green" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="10" markerHeight="10" orient="auto-start-reverse"><path d="M1 1L11 6L1 11Z" fill="#3fbf7f"/></marker>
+    <marker id="arrow" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="10" markerHeight="10" orient="auto"><path d="M1 1L11 6L1 11Z" fill="#333338"/></marker>
     <style>
-      .title{fill:#e7f4fb;font:700 45px Arial,sans-serif;letter-spacing:9px}.sub{fill:#8ba1b0;font:400 20px Arial,sans-serif;letter-spacing:1px}.group{fill:#0b111b;stroke:#263b50;stroke-width:2}.glabel{fill:#8ba1b0;font:600 18px Arial,sans-serif;letter-spacing:4px}.node{fill:#101825;stroke:#38526b;stroke-width:2}.aws{stroke:#d99a2b}.crdb{stroke:#6933b8}.client{stroke:#267fbe}.label{fill:#d7e3ea;font:600 23px Arial,sans-serif}.detail{fill:#8ba1b0;font:400 16px Arial,sans-serif}.line{fill:none;stroke:#7fa8bd;stroke-width:3;marker-end:url(#arrow)}.live{fill:none;stroke:#3fbf7f;stroke-width:4;marker-end:url(#arrow-green)}.hint{fill:#5e7484;font:500 15px Arial,sans-serif;letter-spacing:1px}.pill{fill:#142335}.pillText{fill:#9fbed0;font:600 14px Arial,sans-serif;letter-spacing:1px}
+      .box{fill:#ececff;stroke:#8f68ea;stroke-width:2}.db{fill:#ececff;stroke:#8f68ea;stroke-width:2}.line{fill:none;stroke:#333338;stroke-width:2.5;marker-end:url(#arrow)}.label{fill:#38383e;font:400 27px Arial,sans-serif;text-anchor:middle}.small{fill:#38383e;font:400 22px Arial,sans-serif;text-anchor:middle}.tiny{fill:#38383e;font:400 18px Arial,sans-serif;text-anchor:middle}.caption{fill:#b9b9c4;font:500 16px Arial,sans-serif;letter-spacing:3px}
     </style>
   </defs>
-  <rect width="1920" height="1080" fill="#05080e"/>
-  <path d="M0 180H1920M0 420H1920M0 660H1920M0 900H1920" stroke="#152333" stroke-width="1" opacity=".8"/>
-  <text class="title" x="90" y="90">WORLDLINE</text>
-  <text class="sub" x="90" y="132">Shared episodic memory and globally serializable future commitments</text>
-  <text class="hint" x="90" y="170">LIVE PRODUCTION PATH · memory recall → deterministic safety validation → atomic commitment → CDC witness</text>
-
-  <rect class="group" x="70" y="230" width="400" height="650" rx="22"/><text class="glabel" x="105" y="275">CONTROL ROOM</text>
-  <rect class="node client" x="110" y="350" width="320" height="165" rx="16"/><text class="label" x="145" y="405">WORLDLINE UI</text><text class="detail" x="145" y="440">React / Vinext</text><text class="detail" x="145" y="470">Cloudflare Workers</text>
-  <rect class="pill" x="145" y="482" width="168" height="27" rx="14"/><text class="pillText" x="164" y="501">LIVE CONTROL ROOM</text>
-  <text class="detail" x="110" y="620">Shows the recalled episode,</text><text class="detail" x="110" y="648">unsafe ghost route, committed</text><text class="detail" x="110" y="676">worldline, and receipt evidence.</text>
-
-  <rect class="group" x="540" y="230" width="500" height="650" rx="22"/><text class="glabel" x="575" y="275">AWS</text>
-  <rect class="node aws" x="590" y="330" width="400" height="160" rx="16"/><text class="label" x="625" y="385">Lambda route agent</text><text class="detail" x="625" y="420">public Function URL · typed API</text><text class="detail" x="625" y="450">idempotency · bounded retries</text>
-  <rect class="node aws" x="590" y="575" width="180" height="125" rx="16"/><text class="label" x="620" y="625">Bedrock</text><text class="detail" x="620" y="657">Titan Embed v2</text><text class="detail" x="620" y="681">Nova Micro</text>
-  <rect class="node aws" x="810" y="575" width="180" height="125" rx="16"/><text class="label" x="850" y="625">S3</text><text class="detail" x="842" y="657">versioned</text><text class="detail" x="835" y="681">receipts</text>
-  <rect class="node aws" x="590" y="750" width="400" height="85" rx="16"/><text class="label" x="625" y="800">ECS Fargate CDC consumer</text><text class="detail" x="625" y="825">dedupe · resolved timestamp resume</text>
-
-  <rect class="group" x="1110" y="230" width="740" height="650" rx="22"/><text class="glabel" x="1145" y="275">COCKROACHDB CLOUD · 3 REGIONS</text>
-  <rect class="node crdb" x="1150" y="330" width="300" height="160" rx="16"/><text class="label" x="1185" y="385">Episodic memory</text><text class="detail" x="1185" y="420">maneuver_memories</text><text class="detail" x="1185" y="450">distributed vector index</text>
-  <rect class="node crdb" x="1500" y="330" width="300" height="160" rx="16"/><text class="label" x="1535" y="385">Commitment plane</text><text class="detail" x="1535" y="420">serializable transactions</text><text class="detail" x="1535" y="450">capacity · cells · outbox</text>
-  <rect class="node crdb" x="1150" y="575" width="300" height="125" rx="16"/><text class="label" x="1185" y="625">MVCC history</text><text class="detail" x="1185" y="657">AS OF SYSTEM TIME</text><text class="detail" x="1185" y="681">receipt HLC replay</text>
-  <rect class="node crdb" x="1500" y="575" width="300" height="125" rx="16"/><text class="label" x="1535" y="625">Changefeed</text><text class="detail" x="1535" y="657">route decisions · claims</text><text class="detail" x="1535" y="681">receipts · resolved events</text>
-  <text class="hint" x="1150" y="790">us-east-1 · eu-west-1 · ap-south-1</text><text class="detail" x="1150" y="822">Memory, decision, reservation, and causal evidence live in one transaction domain.</text>
-
-  <path class="line" d="M430 432H588"/><text class="hint" x="455" y="410">PLAN / COMMIT</text>
-  <path class="line" d="M990 385H1148"/><text class="hint" x="1012" y="364">RECALL</text>
-  <path class="line" d="M770 575V492"/><text class="hint" x="782" y="535">EMBED + RANK</text>
-  <path class="line" d="M900 575V492"/><text class="hint" x="914" y="535">ARCHIVE</text>
-  <path class="live" d="M1650 702V792H992"/><text class="hint" x="1280" y="775">CDC CONFIRMS AUTHORITATIVE FUTURE</text>
-  <path class="live" d="M590 792H470V516"/><text class="hint" x="304" y="742">LIVE PROJECTION</text>
-
-  <rect x="70" y="950" width="1780" height="70" rx="14" fill="#0b111b" stroke="#263b50" stroke-width="2"/>
-  <circle cx="115" cy="985" r="7" fill="#3fbf7f"/><text class="detail" x="135" y="992">Memory changes the maneuver before movement.</text>
-  <circle cx="690" cy="985" r="7" fill="#d99a2b"/><text class="detail" x="710" y="992">A conflict becomes a real retry, not an animation.</text>
-  <circle cx="1280" cy="985" r="7" fill="#55a6d4"/><text class="detail" x="1300" y="992">CDC witnesses what became authoritative.</text>
+  <rect width="1920" height="1080" fill="#000"/>
+  <text class="caption" x="54" y="60">WORLDLINE · MEMORY → SAFE FUTURE COMMITMENT</text>
+  <rect class="box" x="45" y="405" width="400" height="140"/>
+  <text class="label" x="245" y="462">WORLDLINE control room</text><text class="label" x="245" y="500">React · Cloudflare Workers</text>
+  <rect class="box" x="365" y="690" width="440" height="160"/>
+  <text class="label" x="585" y="747">CockroachDB Agent Skills</text><text class="small" x="585" y="787">transaction · privilege · health</text>
+  <rect class="box" x="760" y="500" width="330" height="160"/>
+  <text class="label" x="925" y="558">AWS Lambda</text><text class="small" x="925" y="602">typed route agent</text><text class="tiny" x="925" y="632">recall · validate · commit</text>
+  <rect class="box" x="1110" y="100" width="355" height="155"/>
+  <text class="label" x="1287" y="158">Amazon Bedrock</text><text class="small" x="1287" y="202">Titan embeddings + Nova ranking</text>
+  <g transform="translate(1170 392)">
+    <path class="db" d="M0 28C0 10 58 0 130 0S260 10 260 28V168C260 186 202 196 130 196S0 186 0 168Z"/><ellipse cx="130" cy="28" rx="130" ry="28" fill="#ececff" stroke="#8f68ea" stroke-width="2"/>
+    <text class="label" x="130" y="103">Amazon S3</text><text class="small" x="130" y="139">versioned evidence</text><text class="small" x="130" y="169">receipts</text>
+  </g>
+  <g transform="translate(1030 710)">
+    <path class="db" d="M0 32C0 11 83 0 185 0S370 11 370 32V220C370 241 287 252 185 252S0 241 0 220Z"/><ellipse cx="185" cy="32" rx="185" ry="32" fill="#ececff" stroke="#8f68ea" stroke-width="2"/>
+    <text class="label" x="185" y="111">CockroachDB Cloud on AWS</text><text class="small" x="185" y="153">episodic memory + transactions</text><text class="small" x="185" y="190">us-east-1 · eu-west-1 · ap-south-1</text>
+  </g>
+  <rect class="box" x="1540" y="125" width="330" height="150"/>
+  <text class="label" x="1705" y="181">Distributed vector index</text><text class="small" x="1705" y="221">region + vehicle-class recall</text>
+  <rect class="box" x="1540" y="440" width="330" height="145"/>
+  <text class="label" x="1705" y="496">MVCC time travel</text><text class="small" x="1705" y="536">AS OF SYSTEM TIME · HLC receipt</text>
+  <rect class="box" x="1500" y="735" width="370" height="160"/>
+  <text class="label" x="1685" y="792">Serializable commitment</text><text class="small" x="1685" y="832">capacity + exclusion cells + outbox</text>
+  <rect class="box" x="690" y="910" width="290" height="120"/>
+  <text class="label" x="835" y="958">ECS Fargate</text><text class="small" x="835" y="995">changefeed projection</text>
+  <path class="line" d="M445 475H758"/><path class="line" d="M805 680C700 710 690 740 760 748"/><path class="line" d="M970 500C1010 408 1050 320 1110 228"/><path class="line" d="M1090 578H1170"/><path class="line" d="M1090 620C1120 680 1160 700 1215 710"/><path class="line" d="M1400 750C1460 690 1510 620 1540 550"/><path class="line" d="M1400 742C1480 590 1495 365 1540 253"/><path class="line" d="M1400 840H1498"/><path class="line" d="M1030 900C965 920 930 935 980 955"/><path class="line" d="M690 970C530 970 375 890 300 545"/>
+  <text class="caption" x="470" y="450">LIVE PLAN + COMMIT</text><text class="caption" x="1000" y="355">EMBED + RANK</text><text class="caption" x="1145" y="675">ATOMIC RESERVE</text><text class="caption" x="650" y="900">CDC CONFIRMS</text>
 </svg>
