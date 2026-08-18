@@ -8,10 +8,15 @@
  */
 
 /**
- * The published control room must always have a real agent to contact. Local
- * development can override this with NEXT_PUBLIC_WORLDLINE_API_URL in .env.
+ * The published control room calls the Lambda Function URL directly. API
+ * Gateway has a hard integration-response limit of about 30 seconds, which is
+ * shorter than a real three-region admission when Bedrock is slow. The
+ * Function URL preserves the same Lambda, CockroachDB, and CORS boundary
+ * without dropping an otherwise successful decision at that gateway limit.
+ * Local development can override this with NEXT_PUBLIC_WORLDLINE_API_URL.
  */
-const PUBLIC_AGENT_URL = "https://m1gira53f9.execute-api.us-east-1.amazonaws.com";
+const PUBLIC_AGENT_URL =
+  "https://4xyuk4oyxgpfez5kzgvodzlzzm0mudck.lambda-url.us-east-1.on.aws";
 
 export const API_BASE = (
   process.env.NEXT_PUBLIC_WORLDLINE_API_URL ?? PUBLIC_AGENT_URL
