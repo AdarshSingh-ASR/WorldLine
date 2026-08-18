@@ -14,7 +14,7 @@
 [![Node](https://img.shields.io/badge/Node-%E2%89%A522.13-5fa04e?style=flat-square)](#prerequisites)
 [![Hackathon](https://img.shields.io/badge/CockroachDB%20×%20AWS-Agentic%20Memory-000000?style=flat-square)](https://cockroachdb-ai.devpost.com/)
 
-**[▶ Run the demo in 90 seconds](#quickstart-90-seconds)** · [Architecture](#architecture) · [CockroachDB tools](#cockroachdb-tools-used) · [AWS services](#aws-services-used) · [Prove it yourself](#prove-it-yourself)
+**[Open the live app](https://worldline-control-room.finora-asr.workers.dev/)** · **[Watch the demo video](https://youtu.be/Ulx7H7r7owI?si=WvguPiHkNKjUrp-r)** · [Architecture](#architecture) · [CockroachDB tools](#cockroachdb-tools-used) · [AWS services](#aws-services-used) · [Prove it yourself](#prove-it-yourself)
 
 </div>
 
@@ -443,25 +443,13 @@ tests/                        Worker-rendered frontend verification
 infra/bootstrap.yaml          Bootstrap infrastructure
 ```
 
-## How this maps to the judging criteria
+## What's next for WORLDLINE
 
-| Criterion | Where to look |
-|---|---|
-| **Agentic Memory Design** | [Agentic memory design](#agentic-memory-design) — structured episodic rows, prefix-scoped recall, `memory_reads` causal links, memory-cannot-authorize-motion |
-| **Technical Implementation** | Real `VECTOR(1024)` + cosine index, real `40001` retry loop, `AS OF SYSTEM TIME` replay, sinkless CDC with dedupe and cursor resume, Zod-typed boundaries, 5 test suites |
-| **Real-World Impact** | [The problem](#the-problem) — multi-operator airspace deconfliction, directly transferable to warehouse AMRs, port automation, and any fleet claiming exclusive physical slots |
-| **Production Readiness** | [Production readiness](#production-readiness) — four least-privilege identities, idempotency journal, hash-chained receipts, region-failure survival, fail-closed, documented safety boundary |
-| **Creativity & Originality** | Memory that *does cognitive work* on physical futures, the rendered no-memory counterfactual, and treating a `UNIQUE` constraint as a law of physics |
-
-## Honest limitations
-
-- Strategic layer only, seconds ahead of motion. Not a flight controller. Onboard avoidance stays authoritative.
-- Seeded memories are synthetic-but-structured; a production deployment would ingest verified incident reports.
-- The demo scenario is a fixed two-agent contention case, chosen because it is legible in 100 seconds — the transaction and recall paths are not demo-specific.
-- Bedrock model access is granted per AWS account and region. Where Titan and Nova are authorized the agent uses them; elsewhere the labeled deterministic fallback keeps the commitment plane fully functional.
-- The seeded corpus is seven synthetic-but-structured episodes. A production deployment would ingest verified incident reports; the recall, ranking and filtering paths are identical either way.
-- The recall query only uses the distributed vector index once `003_vector_index_outcome.sql` is applied; before that the planner falls back to a full scan. It is applied on the deployed cluster and `npm run verify:recall` exits non-zero if a deployment ever regresses.
-- The admission transaction takes roughly 2.4s when the agent runs outside the region its rows are homed in. Co-locating the agent with the primary region reduces this substantially; see the note on row homing in [`repository.mjs`](services/agent/src/repository.mjs).
+- Ingest verified incident reports through a review and provenance workflow, so the episodic corpus grows from operational experience while preserving the same recall and safety gates.
+- Move from the fixed two-agent demonstration to rolling-horizon admissions for larger mixed fleets, with policy-aware corridor pricing and operator-specific constraints.
+- Connect the commitment plane to simulator and vehicle adapters, while retaining onboard collision avoidance as the final real-time safety authority.
+- Run scheduled regional-failure drills and load tests to tune row homing, capacity partitions, and recovery objectives under realistic fleet demand.
+- Extend the receipt into a portable interoperability record that lets operators, insurers, and regulators independently reconstruct why a movement was allowed.
 
 ## License
 
