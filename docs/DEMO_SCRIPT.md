@@ -16,7 +16,7 @@ Click **Commit both futures**.
 from six weeks ago: same merge angle, closing speed, crosswind, and battery
 asymmetry. That memory records which maneuver actually worked.”
 
-Point to `MEM-2041`, `94%`, and `Vertical separation / +38 m`.
+Point to `MEM-2041`, `81.4%`, and `Vertical separation / +38 m`.
 
 ## 0:48–1:20 — The unforgettable moment
 

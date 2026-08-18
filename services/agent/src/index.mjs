@@ -46,7 +46,7 @@ function fallbackRace(memoryEnabled = true) {
   const memory = {
     id: "MEM-2041",
     maneuverId: "MANEUVER-03",
-    similarity: 0.94,
+    similarity: 0.814,
   };
   const maneuver = chooseManeuver({
     memoryEnabled,
@@ -56,7 +56,7 @@ function fallbackRace(memoryEnabled = true) {
     runId: "WL-2047",
     receiptId: "RCP-7F31A9",
     decisionHlc: "1785063718.442913000,2",
-    similarity: memoryEnabled ? 94 : 0,
+    similarity: memoryEnabled ? 81.4 : 0,
     memoryId: memoryEnabled ? memory.id : "NO-MEMORY",
     memoryAge: "6 weeks ago",
     maneuver: maneuver.label,

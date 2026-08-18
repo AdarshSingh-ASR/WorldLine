@@ -34,14 +34,13 @@ reserves a collision-free future for multiple autonomous agents.
 ## CockroachDB tools
 
 - Distributed Vector Indexing is used at runtime for episodic recall.
-- The ccloud CLI produces cluster topology, backup, and health receipts.
 - CockroachDB Agent Skills constrain transaction retries, privileges, and
   cluster-health verification.
 
 ## The key moment
 
 Two agents claim intersecting futures. One serializable transaction wins. The
-other agent recalls a 94%-similar near-miss, and its worldline visibly bends
+other agent recalls an 81.4%-similar near-miss, and its worldline visibly bends
 above the collision. A dashed route preserves the no-memory counterfactual, so
 the audience sees exactly what the memory changed.
 

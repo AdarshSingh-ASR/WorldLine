@@ -46,7 +46,7 @@ Split them and you get the worst failure mode in autonomy: **a machine that acts
 ## The 100-second proof
 
 1. Two regional drone agents propose routes through the same future exclusion volume. Conflict at `T+14.2s`.
-2. The memory plane embeds the live geometry; CockroachDB's distributed vector index returns a **94%-similar verified near-miss** — same merge angle, closing speed, crosswind, battery asymmetry.
+2. The memory plane embeds the live geometry; CockroachDB's distributed vector index returns an **81.4%-similar verified near-miss** — same merge angle, closing speed, crosswind, battery asymmetry.
 3. That memory selects a maneuver from a **closed, pre-validated candidate set** — the model may rank, never invent.
 4. Both original routes race through **two real serializable transactions**.
 5. CockroachDB commits one and returns `40001` to the other, which retries.
@@ -115,7 +115,7 @@ Source: [`docs/architecture.mmd`](docs/architecture.mmd) · Transaction contract
 
 ## CockroachDB tools used
 
-Three of the four eligible tool categories, each load-bearing at runtime or in the operational path.
+Two eligible tool categories, each load-bearing in the runtime decision path.
 
 ### 1. Distributed Vector Indexing — *runtime episodic recall*
 
@@ -156,21 +156,7 @@ If the prefix columns and the outcome predicate were not doing real work,
 
 Alongside it, `GIST` spatial indexes on route and airspace geometry ([`001:22-23,44-45`](services/agent/migrations/001_worldline_core.sql#L22-L23)) narrow collision candidates **exactly** — approximate vector search never makes a safety decision.
 
-### 2. ccloud CLI — *pre-flight control-plane verification*
-
-| | |
-|---|---|
-| **What the agent does with it** | Before the demo admits any motion, the operator agent shells out to `ccloud` to produce a signed JSON health receipt: cluster topology, region list, and backup inventory — then joins it with an in-database check of region list, vector index presence, and running changefeed count. It **fails closed** if the authoritative world state cannot be read. |
-| **Implementation** | [`ops/cluster-health.ps1`](ops/cluster-health.ps1) — `ccloud cluster info --format json`, `ccloud cluster backup list --format json` |
-| **Run** | `./ops/cluster-health.ps1 -ClusterName worldline -DatabaseUrl $env:WORLDLINE_DATABASE_URL` |
-
-```powershell
-# emits outputs/worldline-cluster-health.json
-{ "cluster": {...}, "backups": [...], "expectedRegions": ["us-east-1","eu-west-1","ap-south-1"],
-  "sql": { "regions": [...], "vectorIndex": true, "changefeeds": 1 } }
-```
-
-### 3. Agent Skills — *constraining what the agent is allowed to do*
+### 2. Agent Skills — *constraining what the agent is allowed to do*
 
 Three skills encode the non-negotiable rules that keep an LLM-driven agent from writing an unsafe transaction, over-privileging itself, or admitting motion against a stale world.
 
@@ -182,7 +168,7 @@ Three skills encode the non-negotiable rules that keep an LLM-driven agent from 
 
 These are enforced in code, not just documented — see the retry loop at [`repository.mjs:758`](services/agent/src/repository.mjs#L758) and role provisioning in [`scripts/provision-roles.mjs`](services/agent/scripts/provision-roles.mjs).
 
-> **Not used:** CockroachDB Cloud Managed MCP Server. The hackathon requires two of four categories; we use three, and we would rather cite three we genuinely depend on than claim four.
+> **Not used:** CockroachDB Cloud Managed MCP Server and ccloud CLI. The hackathon requires two eligible categories; WORLDLINE cites only the two tools that are genuinely integrated into its decision path.
 
 ### Beyond the tool list — why CockroachDB is irreplaceable here
 
@@ -271,7 +257,7 @@ Stating this boundary is not hedging. An agentic system that touches physical mo
 | **Least privilege** | Four DB identities — migration / runtime / CDC / audit. Runtime cannot alter schema; audit is read-only. Provisioned by [`provision-roles.mjs`](services/agent/scripts/provision-roles.mjs). Never an admin connection in application code. |
 | **Idempotency** | `api_idempotency` journal with `owner_token` + request hash; ambiguous-commit (`40003`) resolves through it. Command outbox is idempotent by construction. |
 | **Tamper evidence** | Every accepted future produces a receipt hashed with SHA-256, stored in-row and in versioned S3 with the hash in object metadata. |
-| **Observability** | CDC confirmation table doubles as an audit log (`cdc_by_observed_time`); `broker_events` records region connect/disconnect/recover; ccloud health receipts are persisted JSON artifacts. |
+| **Observability** | CDC confirmation table doubles as an audit log (`cdc_by_observed_time`); `broker_events` records region connect/disconnect/recover; health verification reads current CockroachDB state directly. |
 | **Resilience** | `SURVIVE REGION FAILURE`; the demo deliberately kills the Europe broker and the commitment plane stays available. Provider fallback on model failure. Fail-closed on unreadable world state. |
 | **Secrets** | AWS Secrets Manager only. `.env` files are gitignored; `.env.example` ships placeholders. |
 | **Tests** | `node --test` suites for config, database, HTTP contracts, invariants, and CDC projection, plus worker-rendered frontend verification. |
@@ -283,7 +269,7 @@ Stating this boundary is not hedging. An agentic system that touches physical mo
 ### Prerequisites
 
 - **Node.js ≥ 22.13** (`node --version`)
-- Optional for the full stack: a CockroachDB Cloud cluster, `ccloud` + `cockroach` CLIs, AWS credentials
+- Optional for the full stack: a CockroachDB Cloud cluster, `cockroach` CLI, AWS credentials
 
 ### 1. Control room only — no cloud credentials needed
 
@@ -377,8 +363,6 @@ npm run verify:recall
 # Regions, localities, vector index, and CDC in one report
 npm run verify:database
 
-# Control-plane topology + backup receipt via ccloud
-./ops/cluster-health.ps1 -ClusterName worldline -DatabaseUrl $env:WORLDLINE_DATABASE_URL
 ```
 
 ## API surface
@@ -437,7 +421,6 @@ services/agent/
   skills/                     CockroachDB Agent Skills (3)
   scripts/                    migrate · seed · smoke · verify · contention test
 services/changefeed/          Persistent Fargate CDC projection (dedupe + resume)
-ops/cluster-health.ps1        ccloud + SQL health receipt
 docs/                         Architecture · transactions · threat model · demo script
 tests/                        Worker-rendered frontend verification
 infra/bootstrap.yaml          Bootstrap infrastructure

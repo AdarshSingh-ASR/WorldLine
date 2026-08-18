@@ -36,7 +36,7 @@ test("server-renders the WORLDLINE memory control room", async () => {
   assert.match(html, /PREDICTED AIRSPACE/);
   assert.match(
     html,
-    /rel="icon"[^>]*href="https:\/\/worldline\.example\/og\.png"/i,
+    /rel="icon"[^>]*href="https:\/\/worldline\.example\/brand\/worldline-mark\.svg"/i,
   );
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Starter Project/i);
 });
