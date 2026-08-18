@@ -14,6 +14,12 @@ const rankSchema = z.object({
   reason: z.string().min(8).max(400),
 });
 
+function parseRankResponse(text) {
+  const cleaned = String(text).replace(/^```(?:json)?\s*|\s*```$/g, "").trim();
+  const json = cleaned.match(/\{[\s\S]*?\}/)?.[0] ?? cleaned;
+  return rankSchema.parse(JSON.parse(json));
+}
+
 export class WorldlineProviders {
   constructor(config) {
     this.config = config;
@@ -53,13 +59,14 @@ export class WorldlineProviders {
       return { ...fallback, provider: "deterministic" };
     }
 
+    const memory = memories[0];
     const prompt = [
-      "You are ranking pre-validated drone separation maneuvers.",
-      "Choose exactly one candidate. Do not invent a maneuver.",
-      `Scenario: ${JSON.stringify(scenario)}`,
-      `Verified episodic memories: ${JSON.stringify(memories)}`,
-      `Candidates: ${JSON.stringify(maneuvers)}`,
-      'Return JSON only: {"maneuverId":"MANEUVER-03","reason":"..."}',
+      "Choose one pre-validated drone separation maneuver.",
+      "A recalled verified-safe episode must causally influence the choice.",
+      `Scenario: ${scenario.description}`,
+      `Recalled episode: id=${memory.id}; maneuver=${memory.maneuverId}; outcome=${memory.outcome}; similarity=${Number(memory.similarity).toFixed(2)}.`,
+      `Allowed candidates: ${maneuvers.map((candidate) => `${candidate.id} (${candidate.label})`).join("; ")}.`,
+      'Return exactly one single-line JSON object, with no markdown or extra text: {"maneuverId":"MANEUVER-03","reason":"short reason without quotation marks"}',
     ].join("\n");
 
     try {
@@ -79,7 +86,7 @@ export class WorldlineProviders {
         payload.output?.message?.content?.[0]?.text ??
         payload.content?.[0]?.text ??
         "";
-      const parsed = rankSchema.parse(JSON.parse(text.replace(/^```json|```$/g, "").trim()));
+      const parsed = parseRankResponse(text);
       const selected = maneuvers.find((item) => item.id === parsed.maneuverId);
       return {
         ...selected,
