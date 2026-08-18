@@ -379,7 +379,12 @@ export default function ControlRoom() {
     <main className="console" data-phase={phase}>
       <header className="console-head">
         <div className="identity">
-          <span className="sigil" aria-hidden="true" />
+          <img
+            className="sigil"
+            src="/brand/worldline-mark.svg"
+            alt=""
+            aria-hidden="true"
+          />
           <div>
             <h1>WORLDLINE</h1>
             <p>Commitment plane · corridor {briefing.status === "ready" ? briefing.value.scenario.id : "—"}</p>

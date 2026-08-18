@@ -2,9 +2,13 @@
 
 # WORLDLINE
 
+<img src="public/brand/worldline-lockup.svg" alt="WORLDLINE — committed and deflected worldlines" width="460" />
+
 ### Shared episodic memory and a globally serializable commitment plane for autonomous machines.
 
 **The future has happened before. Remember it before machines move.**
+
+<img src="public/og.png" alt="Two worldlines meet at a commit point; the conflicting future bends into a safe committed route." width="860" />
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-14b8a6.svg?style=flat-square)](LICENSE)
 [![CockroachDB](https://img.shields.io/badge/CockroachDB-Vector%20Index%20%2B%20Serializable-6933ff?style=flat-square)](#cockroachdb-tools-used)

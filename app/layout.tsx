@@ -22,7 +22,7 @@ export async function generateMetadata(): Promise<Metadata> {
     title,
     description,
     icons: {
-      icon: "/og.png",
+      icon: "/brand/worldline-mark.svg",
     },
     openGraph: {
       title,
@@ -31,8 +31,8 @@ export async function generateMetadata(): Promise<Metadata> {
       images: [
         {
           url: image,
-          width: 1536,
-          height: 1024,
+          width: 1731,
+          height: 909,
           alt: "WORLDLINE autonomous worldlines bending around a future conflict",
         },
       ],

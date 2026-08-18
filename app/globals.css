@@ -141,24 +141,20 @@ h3 {
 }
 
 .sigil {
-  width: 22px;
-  height: 22px;
-  border: 1px solid var(--proposed);
-  position: relative;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  animation: worldline-mark 6s ease-in-out infinite;
 }
 
-.sigil::before,
-.sigil::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-left: 1px solid var(--committed);
-  transform: rotate(28deg);
+@keyframes worldline-mark {
+  0%,
+  100% { transform: translateY(0); }
+  50% { transform: translateY(-1px); }
 }
 
-.sigil::after {
-  border-left-color: var(--conflict);
-  transform: rotate(-28deg);
+@media (prefers-reduced-motion: reduce) {
+  .sigil { animation: none; }
 }
 
 .head-status {
