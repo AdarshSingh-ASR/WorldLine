@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">WORLDLINE commit and deflection mark</title>
+  <desc id="desc">Two worldlines meet at a commit point. One continues while the conflicting path bends into a safe route.</desc>
+  <style>
+    :root { --worldline-ink:#6e8ca5; --worldline-committed:#55e6bc; --worldline-conflict:#ff6d57; }
+    .grid { fill:none; stroke:var(--worldline-ink); stroke-width:2; opacity:.5; vector-effect:non-scaling-stroke; }
+    .committed { fill:none; stroke:var(--worldline-committed); stroke-width:4; stroke-linecap:round; stroke-linejoin:round; vector-effect:non-scaling-stroke; }
+    .conflict { fill:none; stroke:var(--worldline-conflict); stroke-width:4; stroke-linecap:round; stroke-linejoin:round; vector-effect:non-scaling-stroke; }
+    .node { fill:var(--worldline-committed); stroke:var(--worldline-ink); stroke-width:2; }
+    .pulse { fill:none; stroke:var(--worldline-committed); stroke-width:2; opacity:.8; }
+    @media (prefers-reduced-motion: reduce) { .pulse { display:none; } }
+  </style>
+  <path class="grid" d="M24 16V112M48 16V112M80 16V112M104 16V112M16 24H112M16 48H112M16 80H112M16 104H112"/>
+  <path class="committed" d="M16 102L64 64L112 26"/>
+  <path class="conflict" d="M16 26L51 54Q60 61 67 72L83 98Q92 108 112 108"/>
+  <circle class="pulse" cx="64" cy="64" r="8">
+    <animate attributeName="r" values="7;16;7" dur="2.4s" repeatCount="indefinite"/>
+    <animate attributeName="opacity" values=".72;0;.72" dur="2.4s" repeatCount="indefinite"/>
+  </circle>
+  <path class="grid" d="M64 48V80M48 64H80"/>
+  <circle class="node" cx="64" cy="64" r="6"/>
+</svg>

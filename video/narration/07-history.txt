@@ -1,0 +1,1 @@
+Back in WORLDLINE, the receipt reconstructs world state at admission with A S OF SYSTEM TIME. It shows who committed first, who retried, which memory changed the second decision, and exactly what became authoritative.

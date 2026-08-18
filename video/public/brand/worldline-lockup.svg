@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 128" role="img" aria-labelledby="title">
+  <title id="title">WORLDLINE</title>
+  <style>
+    :root { --worldline-ink:#6e8ca5; --worldline-committed:#55e6bc; --worldline-conflict:#ff6d57; --worldline-type:#d7e3ea; }
+    .grid { fill:none; stroke:var(--worldline-ink); stroke-width:2; opacity:.5; }.commit { fill:none; stroke:var(--worldline-committed); stroke-width:4; stroke-linecap:round; stroke-linejoin:round; }.conflict { fill:none; stroke:var(--worldline-conflict); stroke-width:4; stroke-linecap:round; stroke-linejoin:round; }.node { fill:var(--worldline-committed); stroke:var(--worldline-ink); stroke-width:2; }.word { fill:var(--worldline-type); font-family:ui-sans-serif,Segoe UI,Arial,sans-serif; font-size:48px; font-weight:700; letter-spacing:12px; }
+  </style>
+  <g transform="translate(8 8)">
+    <path class="grid" d="M24 16V96M48 16V96M80 16V96M104 16V96M16 24H112M16 48H112M16 80H112"/>
+    <path class="commit" d="M16 94L64 56L112 18"/>
+    <path class="conflict" d="M16 18L51 46Q60 53 67 64L83 90Q92 100 112 100"/>
+    <path class="grid" d="M64 40V72M48 56H80"/><circle class="node" cx="64" cy="56" r="6"/>
+  </g>
+  <text class="word" x="154" y="78">WORLDLINE</text>
+</svg>
