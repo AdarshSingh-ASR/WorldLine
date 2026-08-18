@@ -7,8 +7,14 @@
  * unavailable state instead of inventing a world.
  */
 
+/**
+ * The published control room must always have a real agent to contact. Local
+ * development can override this with NEXT_PUBLIC_WORLDLINE_API_URL in .env.
+ */
+const PUBLIC_AGENT_URL = "https://m1gira53f9.execute-api.us-east-1.amazonaws.com";
+
 export const API_BASE = (
-  process.env.NEXT_PUBLIC_WORLDLINE_API_URL ?? "http://127.0.0.1:8790"
+  process.env.NEXT_PUBLIC_WORLDLINE_API_URL ?? PUBLIC_AGENT_URL
 ).replace(/\/$/, "");
 
 /* ------------------------------------------------------------------ types */
