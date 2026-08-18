@@ -2,8 +2,6 @@
 
 # WORLDLINE
 
-<img src="public/brand/worldline-lockup.svg" alt="WORLDLINE — committed and deflected worldlines" width="460" />
-
 ### Shared episodic memory and a globally serializable commitment plane for autonomous machines.
 
 **The future has happened before. Remember it before machines move.**
