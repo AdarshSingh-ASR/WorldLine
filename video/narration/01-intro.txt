@@ -1,1 +1,0 @@
-What happens when two autonomous agents try to reserve the same piece of the future? WORLDLINE lets them negotiate that future through CockroachDB.

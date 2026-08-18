@@ -1,1 +1,0 @@
-WORLDLINE gives autonomous machines shared episodic memory and a globally serializable future. Agents do not just predict the future. They negotiate it.

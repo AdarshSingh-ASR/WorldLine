@@ -1,1 +1,0 @@
-Here is the deployed path. The Cloudflare control room calls a typed route agent on AWS Lambda. Titan embeddings and Nova ranking run through Amazon Bedrock. CockroachDB owns vector memory, serializable reservations, and M V C C history. A Fargate changefeed consumer witnesses the committed state, while S three archives its evidence.
